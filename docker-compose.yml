@@ -1,0 +1,34 @@
+# AI Agora Backend - Docker Setup
+
+# Database configuration
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: ai-agora-postgres
+    environment:
+      POSTGRES_DB: ai_agora_dev
+      POSTGRES_USER: ai_agora_user
+      POSTGRES_PASSWORD: ai_agora_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ai-agora-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-agora-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - ai-agora-network
+
+volumes:
+  postgres_data:
+
+networks:
+  ai-agora-network:
+    driver: bridge
