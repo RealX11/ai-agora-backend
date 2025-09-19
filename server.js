@@ -28,7 +28,7 @@ const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
 // OpenAI: use modern “gpt-4.1” series via REST (no SDK surface mismatch)
 const OPENAI_CHAT_MODEL = 'gpt-4.1';
 // Anthropic: newest stable Claude 3.5 Sonnet (Oct 2024)
-const CLAUDE_MODEL = 'claude-3.5-sonnet-20241022';
+const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 // Google: official latest alias
 const GEMINI_MODEL = "gemini-2.5-flash";
 
