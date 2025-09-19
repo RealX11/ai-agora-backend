@@ -197,22 +197,38 @@ app.post('/api/chat', async (req, res) => {
       })()
     );
 
-    // Gemini (Google)
+    // Gemini (Google) - DEBUG VERSION
     aiPromises.push(
       (async () => {
         try {
+          console.log('[GEMINI] Starting API call...');
+          console.log('[GEMINI] API Key exists:', !!process.env.GOOGLE_AI_API_KEY);
+          console.log('[GEMINI] Model name:', GEMINI_MODEL);
+          
           const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+          console.log('[GEMINI] Model created successfully');
+          
           const history = conversationHistory.slice(-6).map(m => ({
             role: m.role === 'user' ? 'user' : 'model',
             parts: [{ text: m.content }],
           }));
+          console.log('[GEMINI] History prepared:', history.length, 'messages');
+          
           const chat = model.startChat({
             history,
             generationConfig: { maxOutputTokens: 400, temperature: 0.7 },
           });
+          console.log('[GEMINI] Chat started');
+          
           const result = await chat.sendMessage(`Please respond in ${languageInstruction}: ${question}`);
+          console.log('[GEMINI] Response received successfully');
+          
           return result?.response?.text() || 'Gemini response error';
         } catch (err) {
+          console.error('[GEMINI ERROR] Status:', err.status);
+          console.error('[GEMINI ERROR] Code:', err.code);
+          console.error('[GEMINI ERROR] Message:', err.message);
+          console.error('[GEMINI ERROR] Full error:', JSON.stringify(err, null, 2));
           return `Gemini Error: ${err.message}`;
         }
       })()
