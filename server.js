@@ -165,7 +165,6 @@ app.post('/api/chat', async (req, res) => {
     includeClaude = true,
     includeGemini = true,
     includeModerator = true,
-    moderatorSource = 'gpt',
   } = req.body;
 
   // Combine enabledAIs from new clients and fallback to include-params for older clients
@@ -177,9 +176,11 @@ app.post('/api/chat', async (req, res) => {
   };
 
   if (!question || typeof question !== 'string') {
+    // For a non-streaming endpoint, we can send a normal JSON error.
     return res.status(400).json({ error: 'Question is required', success: false });
   }
 
+  // Setup SSE
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -227,14 +228,61 @@ app.post('/api/chat', async (req, res) => {
               ...userOnlyHistory.slice(-3),
               { role: 'user', content: `Question: "${question}"\n\n${previousRoundsContext ? 'Previous rounds:\n' + previousRoundsContext + '\n\nYour turn:' : ''}` },
             ];
-            const stream = await openaiChat(messages, { max_tokens: 400, stream: true });
-            for await (const chunk of stream) {
-              const content = chunk.choices?.[0]?.delta?.content || '';
-              if (content) {
-                fullResponse += content;
-                sendSse(res, 'chunk', { ai: 'gpt', content });
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                model: OPENAI_CHAT_MODEL, 
+                messages, 
+                max_tokens: 400, 
+                temperature: 0.7, 
+                stream: true 
+              }),
+            });
+
+            if (!response.ok) {
+              throw new Error(`OpenAI API error: ${response.status}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed.startsWith('data: ')) {
+                  const data = trimmed.substring(6);
+                  if (data === '[DONE]') {
+                    break;
+                  }
+                  if (data) {
+                    try {
+                      const json = JSON.parse(data);
+                      const content = json.choices?.[0]?.delta?.content;
+                      if (content) {
+                        fullResponse += content;
+                        sendSse(res, 'chunk', { ai: 'gpt', content });
+                      }
+                    } catch (e) {
+                      // Skip malformed JSON chunks
+                      continue;
+                    }
+                  }
+                }
               }
             }
+
           } catch (err) {
             console.error('[STREAM] GPT Error:', err.message);
             fullResponse = `GPT Error: ${err.message}`;
@@ -289,8 +337,10 @@ app.post('/api/chat', async (req, res) => {
             const result = await chat.sendMessageStream(`Question: "${question}"\n\n${previousRoundsContext ? 'Previous rounds:\n' + previousRoundsContext + '\n\nYour turn:' : ''} Respond in ${languageInstruction}.`);
             for await (const chunk of result.stream) {
               const content = chunk.text();
-              fullResponse += content;
-              sendSse(res, 'chunk', { ai: 'gemini', content });
+              if (content) {
+                fullResponse += content;
+                sendSse(res, 'chunk', { ai: 'gemini', content });
+              }
             }
           } catch (err) {
             console.error('[STREAM] Gemini Error:', err.message);
@@ -315,6 +365,10 @@ app.post('/api/chat', async (req, res) => {
       let moderatorText = '';
       try {
         const finalResponses = allRoundsResponses[allRoundsResponses.length - 1];
+        if (!finalResponses || Object.keys(finalResponses).length === 0) {
+            throw new Error("No AI responses available for moderation.");
+        }
+
         let moderatorContext = `User asked: "${question}"\n\n--- Final AI Responses ---\n`;
         if (finalResponses.gpt) moderatorContext += `GPT: ${finalResponses.gpt}\n`;
         if (finalResponses.claude) moderatorContext += `Claude: ${finalResponses.claude}\n`;
@@ -329,16 +383,68 @@ app.post('/api/chat', async (req, res) => {
         };
         const moderatorPrompt = moderatorPrompts[moderatorStyle] || moderatorPrompts.neutral;
 
-        // Using non-streaming for moderator as it's a final summary
+        // Stream moderator response
         const modMessages = [{ role: 'system', content: moderatorPrompt }, { role: 'user', content: moderatorContext }];
-        const modJson = await openaiChat(modMessages, { max_tokens: 200 });
-        moderatorText = modJson.choices?.[0]?.message?.content || 'Moderator response error';
+        
+        const moderatorResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ 
+            model: OPENAI_CHAT_MODEL, 
+            messages: modMessages, 
+            max_tokens: 200, 
+            temperature: 0.8, 
+            stream: true 
+          }),
+        });
+
+        if (moderatorResponse.ok) {
+          const reader = moderatorResponse.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed.startsWith('data: ')) {
+                const data = trimmed.substring(6);
+                if (data === '[DONE]') {
+                  break;
+                }
+                if (data) {
+                  try {
+                    const json = JSON.parse(data);
+                    const content = json.choices?.[0]?.delta?.content;
+                    if (content) {
+                      moderatorText += content;
+                      sendSse(res, 'moderator_chunk', { content });
+                    }
+                  } catch (e) {
+                    continue;
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          moderatorText = 'Moderator response error';
+        }
 
       } catch (err) {
         console.error('[MODERATOR] Error:', err.message);
         moderatorText = `Moderator Error: ${err.message}`;
+        sendSse(res, 'moderator_chunk', { content: moderatorText });
       }
-      sendSse(res, 'moderator_chunk', { content: moderatorText });
       sendSse(res, 'moderator_end', {});
       console.log('[MODERATOR] Response sent.');
     }
