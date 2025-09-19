@@ -30,7 +30,7 @@ const OPENAI_CHAT_MODEL = 'gpt-4.1';
 // Anthropic: newest stable Claude 3.5 Sonnet (Oct 2024)
 const CLAUDE_MODEL = 'claude-3.5-sonnet-20241022';
 // Google: official latest alias
-const GEMINI_MODEL = 'gemini-1.5-pro-latest';
+const GEMINI_MODEL = 'gemini-1.5-pro';
 
 // ====== MIDDLEWARE ======
 app.use(cors());
