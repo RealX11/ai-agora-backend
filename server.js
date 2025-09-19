@@ -22,7 +22,6 @@ const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
-const fetch = require("node-fetch");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
