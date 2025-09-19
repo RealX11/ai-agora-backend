@@ -71,7 +71,29 @@ app.use(cors());
 app.use(express.json());
 
 // ====== UTILS ======
+function detectLanguage(text) {
+  const tr = ['ve', 'bir', 'bu', 'da', 'de', 'ile', 'için', 'var', 'olan', 'çok', 'daha', 'en', 'şey', 'gibi', 'sonra'];
+  const en = ['the', 'and', 'is', 'a', 'to', 'in', 'it', 'you', 'that', 'he', 'was', 'for', 'on', 'are', 'as', 'with'];
+  const es = ['el', 'la', 'de', 'que', 'y', 'a', 'en', 'un', 'es', 'se', 'no', 'te', 'lo', 'le', 'da'];
+  const fr = ['le', 'de', 'et', 'à', 'un', 'il', 'être', 'en', 'avoir', 'que', 'pour', 'dans', 'ce', 'son'];
+  const de = ['der', 'die', 'und', 'in', 'den', 'von', 'zu', 'das', 'mit', 'sich', 'des', 'auf', 'für', 'ist', 'im'];
+  const ar = ['في', 'من', 'إلى', 'على', 'أن', 'هذا', 'هذه', 'كان', 'التي', 'الذي', 'ما', 'لا', 'أو', 'كل'];
 
+  const t = (text || '').toLowerCase();
+  const scores = {
+    tr: tr.filter(w => t.includes(w)).length,
+    en: en.filter(w => t.includes(w)).length,
+    es: es.filter(w => t.includes(w)).length,
+    fr: fr.filter(w => t.includes(w)).length,
+    de: de.filter(w => t.includes(w)).length,
+    ar: ar.filter(w => text.includes(w)).length, // keep rtl raw
+  };
+  return Object.keys(scores).reduce((a, b) => (scores[a] > scores[b] ? a : b));
+}
+
+function langLabel(code) {
+  return ({ tr: 'Türkçe', en: 'English', es: 'Spanish', fr: 'French', de: 'German', ar: 'Arabic' }[code] || 'English');
+}
 
 // OpenAI chat via REST (avoids SDK surface differences)
 async function openaiChat(messages, { model = OPENAI_CHAT_MODEL, max_tokens = 400, temperature = 0.7 } = {}) {
@@ -111,6 +133,7 @@ app.get('/health', (req, res) => {
     },
     features: {
       structuredOutput: true,
+      languageDetection: true,
       parallelProcessing: true,
       moderatorStyles: ['neutral', 'analytical', 'educational', 'creative', 'quick-summary'],
     },
@@ -121,7 +144,7 @@ app.post('/api/chat', async (req, res) => {
   try {
     const {
       question,
-      
+      language,
       conversation = [],
       moderatorStyle = 'neutral',
       structuredOutput = false,
@@ -146,6 +169,8 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Question is required', success: false });
     }
 
+    const detectedLang = language || detectLanguage(question);
+    const languageInstruction = langLabel(detectedLang);
 
     // iOS ModeratorStyle compatibility mapping
     const moderatorStyleMapping = {
@@ -275,6 +300,7 @@ app.post('/api/chat', async (req, res) => {
             const messages = [
               {
                 role: 'system',
+                content: `You are ChatGPT. Respond briefly in ${languageInstruction}. Keep answers short and helpful.`,
               },
               ...userOnlyHistory.slice(-3),
               { role: 'user', content: gptPrompt },
@@ -324,6 +350,7 @@ app.post('/api/chat', async (req, res) => {
             const claudeResponse = await anthropic.messages.create({
               model: CLAUDE_MODEL,
               max_tokens: 150, // Reduced from 500 for faster responses
+              system: `You are Claude, an AI assistant. Respond concisely in ${languageInstruction}. Keep answers brief but helpful.`,
               messages: msgs,
             });
             roundResponses.claude = claudeResponse?.content?.[0]?.text || 'Claude response error';
@@ -365,8 +392,9 @@ app.post('/api/chat', async (req, res) => {
             // Start chat session
             const chat = model.startChat({ history });
             
+            let geminiPrompt = `You are Gemini. Respond concisely in ${languageInstruction}.
 
-console.log(`User question: ${question}`);
+User question: "${question}"`;
 
             if (currentRoundContext) {
               geminiPrompt += `\n\nOther AI responses: ${currentRoundContext}`;
@@ -416,6 +444,11 @@ console.log(`User question: ${question}`);
     
     if (activeAIs.moderator) {
       const moderatorPrompts = {
+        neutral: `Summarize key points briefly in ${languageInstruction}.`,
+        analytical: `Compare AI perspectives briefly in ${languageInstruction}.`,
+        educational: `Explain briefly in ${languageInstruction}.`,
+        creative: `Present information creatively but briefly in ${languageInstruction}.`,
+        'quick-summary': `Very brief summary in ${languageInstruction}. 1-2 sentences max.`,
       };
       const moderatorPrompt = moderatorPrompts[finalModeratorStyle] || moderatorPrompts.neutral;
 
@@ -505,6 +538,7 @@ console.log(`User question: ${question}`);
     // Build final response object with only enabled AIs
     const responseData = {
       success: true,
+      detectedLanguage: detectedLang,
       roundCount: maxRounds,
       activeAIs: Object.keys(activeAIs).filter(ai => activeAIs[ai]),
       moderatorSource: finalModeratorSource,
@@ -581,64 +615,4 @@ app.listen(PORT, () => {
     anthropic: !!process.env.ANTHROPIC_API_KEY,
     google: !!process.env.GOOGLE_AI_API_KEY,
   });
-});
-
-
-// 🔁 STREAMING ENDPOINT - /api/chat-stream
-app.post('/api/chat-stream', async (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-
-  const {
-    question,
-    includeGPT,
-    includeClaude,
-    includeGemini,
-    includeModerator,
-    moderatorSource,
-    moderatorStyle,
-    roundCount
-  } = req.body;
-
-  function send(source, text) {
-    res.write(`data: ${JSON.stringify({ source, text })}\n\n`);
-  }
-
-  function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  try {
-    if (includeGPT) {
-      send('gpt', 'GPT is thinking...');
-      await sleep(1200);
-      send('gpt', 'GPT: The capital of France is Paris.');
-    }
-
-    if (includeClaude) {
-      send('claude', 'Claude is reviewing GPT...');
-      await sleep(1000);
-      send('claude', 'Claude: GPT is correct. Paris is the capital.');
-    }
-
-    if (includeGemini) {
-      send('gemini', 'Gemini is analyzing...');
-      await sleep(1000);
-      send('gemini', 'Gemini: Paris is indeed the capital of France.');
-    }
-
-    if (includeModerator) {
-      send('moderator', 'Moderator is summarizing...');
-      await sleep(1300);
-      send('moderator', 'Moderator: All AIs agree. Paris is correct.');
-    }
-
-    res.write(`event: end\ndata: done\n\n`);
-    res.end();
-  } catch (err) {
-    console.error(err);
-    res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
-    res.end();
-  }
 });
