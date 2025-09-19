@@ -216,7 +216,13 @@ app.post('/api/chat', async (req, res) => {
           
           const chat = model.startChat({
             history,
-            generationConfig: { maxOutputTokens: 400, temperature: 0.7 },
+            generationConfig: { 
+              maxOutputTokens: 400, 
+              temperature: 0.7,
+              thinkingConfig: {
+                thinkingBudget: 0  // Disable thinking to prevent MAX_TOKENS issue
+              }
+            },
           });
           console.log('[GEMINI] Chat started');
           
