@@ -58,13 +58,13 @@ try {
   console.error('[INIT] Failed to initialize Google AI client:', error.message);
 }
 
-// ====== MODEL CHOICES (auto “latest”) ======
-// OpenAI: use modern “gpt-4.1” series via REST (no SDK surface mismatch)
-const OPENAI_CHAT_MODEL = 'gpt-4.1';
-// Anthropic: newest stable Claude 3.5 Sonnet (Oct 2024)
+// ====== MODEL CHOICES (auto "latest") ======
+// OpenAI: latest stable GPT-4 model
+const OPENAI_CHAT_MODEL = 'gpt-4o';
+// Anthropic: latest Claude Sonnet 4 model (from API response)
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-// Google: official latest alias
-const GEMINI_MODEL = "gemini-2.5-flash";
+// Google: latest stable Gemini 2.5 Pro model
+const GEMINI_MODEL = "gemini-2.5-pro";
 
 // ====== MIDDLEWARE ======
 app.use(cors());
@@ -135,7 +135,7 @@ app.get('/health', (req, res) => {
       structuredOutput: true,
       languageDetection: true,
       parallelProcessing: true,
-      moderatorStyles: ['neutral', 'analytical', 'educational', 'creative'],
+      moderatorStyles: ['neutral', 'analytical', 'educational', 'creative', 'quick-summary'],
     },
   });
 });
@@ -147,7 +147,11 @@ app.post('/api/chat', async (req, res) => {
       language,
       conversation = [],
       moderatorStyle = 'neutral',
-      structuredOutput = false, // New option for structured responses
+      structuredOutput = false,
+      roundCount = 1,
+      // New AI selection parameters
+      enabledAIs = { gpt: true, claude: true, gemini: true, moderator: true },
+      moderatorSource = 'gpt', // Which AI will be the moderator source
       // (iOS artık model göndermiyor; backend auto-select yapıyor)
     } = req.body;
 
@@ -166,185 +170,365 @@ app.post('/api/chat', async (req, res) => {
       }))
       .filter(m => !!m.content);
 
-    // === Parallel calls ===
-    const aiPromises = [];
+    console.log('[DEBUG] Original conversation history:', conversationHistory.length, 'messages');
+    
+    // IMPORTANT: Each AI should see only USER messages in history, not other AI responses
+    // This prevents AIs from responding to each other instead of the user
+    const userOnlyHistory = conversationHistory.filter(msg => msg.role === 'user');
+    console.log('[DEBUG] User-only history for AIs:', userOnlyHistory.length, 'messages');
 
-    // GPT (OpenAI)
-    aiPromises.push(
-      (async () => {
-        try {
-          const messages = [
-            {
-              role: 'system',
-              content: `You are ChatGPT, a helpful AI assistant. Respond naturally and informatively in ${languageInstruction}. Keep responses concise but informative.`,
-            },
-            ...conversationHistory.slice(-6),
-            { role: 'user', content: question },
-          ];
-          const j = await openaiChat(messages, {
-            model: OPENAI_CHAT_MODEL,
-            max_tokens: 400,
-            temperature: 0.7,
-          });
-          return j.choices?.[0]?.message?.content || 'GPT response error';
-        } catch (err) {
-          return `GPT Error: ${err.message}`;
+    // Validate round count
+    const maxRounds = Math.max(1, Math.min(roundCount || 1, 5)); // Limit to 1-5 rounds
+    console.log('[ROUNDS] Processing', maxRounds, 'rounds of AI conversation');
+    
+    // Validate enabled AIs
+    const activeAIs = {
+      gpt: enabledAIs?.gpt !== false,
+      claude: enabledAIs?.claude !== false,
+      gemini: enabledAIs?.gemini !== false,
+      moderator: enabledAIs?.moderator !== false
+    };
+    
+    console.log('[AI SELECTION] Active AIs:', activeAIs);
+    console.log('[MODERATOR] Source:', moderatorSource, 'Style:', moderatorStyle);
+
+    // Determine AI execution order based on enabled AIs
+    const aiOrder = [];
+    if (activeAIs.gpt) aiOrder.push('gpt');
+    if (activeAIs.claude) aiOrder.push('claude');
+    if (activeAIs.gemini) aiOrder.push('gemini');
+    
+    if (aiOrder.length === 0) {
+      return res.status(400).json({ 
+        error: 'At least one AI assistant must be enabled', 
+        success: false 
+      });
+    }
+    
+    console.log('[AI ORDER] Execution sequence:', aiOrder);
+
+    // === Sequential AI calls with selective enabled AIs ===
+    const allRoundsResponses = [];
+    
+    for (let round = 1; round <= maxRounds; round++) {
+      console.log(`[ROUND ${round}] Starting round ${round} of ${maxRounds}...`);
+      
+      const roundResponses = {};
+      
+      // Build context from previous rounds
+      let previousRoundsContext = '';
+      if (round > 1) {
+        previousRoundsContext = allRoundsResponses.map((prevRound, index) => {
+          let roundSummary = `\n--- Round ${index + 1} Results ---\n`;
+          if (prevRound.gpt) roundSummary += `GPT: ${prevRound.gpt}\n`;
+          if (prevRound.claude) roundSummary += `Claude: ${prevRound.claude}\n`;
+          if (prevRound.gemini) roundSummary += `Gemini: ${prevRound.gemini}\n`;
+          return roundSummary;
+        }).join('\n');
+      }
+
+      // Execute AIs in order based on user selection
+      for (let i = 0; i < aiOrder.length; i++) {
+        const aiName = aiOrder[i];
+        
+        // Build context of current round responses so far
+        let currentRoundContext = '';
+        const completedAIs = aiOrder.slice(0, i);
+        if (completedAIs.length > 0) {
+          currentRoundContext = completedAIs.map(ai => {
+            if (roundResponses[ai]) {
+              return `${ai.toUpperCase()}: ${roundResponses[ai]}`;
+            }
+            return '';
+          }).filter(text => text).join('\n\n');
         }
-      })()
-    );
 
-    // Claude (Anthropic)
-    aiPromises.push(
-      (async () => {
-        try {
-          const msgs = [
-            ...conversationHistory.slice(-6).filter(m => m.role !== 'system').map(m => ({
-              role: m.role === 'user' ? 'user' : 'assistant',
-              content: m.content,
-            })),
-            { role: 'user', content: question },
-          ];
-          const resp = await anthropic.messages.create({
+        if (aiName === 'gpt' && activeAIs.gpt) {
+          // GPT Implementation
+          try {
+            console.log(`[ROUND ${round}] Step ${i + 1}: GPT responding...`);
+            
+            let gptPrompt = question;
+            if (round > 1 || currentRoundContext) {
+              gptPrompt = `User question: "${question}"`;
+              
+              if (previousRoundsContext) {
+                gptPrompt += `\n\nPrevious rounds of discussion:${previousRoundsContext}`;
+              }
+              
+              if (currentRoundContext) {
+                gptPrompt += `\n\nCurrent round responses so far:\n${currentRoundContext}`;
+              }
+              
+              gptPrompt += `\n\nThis is round ${round}. Please provide your response to the original question, taking into account the previous discussion${currentRoundContext ? ' and current round responses' : ''}.`;
+            }
+            
+            const messages = [
+              {
+                role: 'system',
+                content: `You are ChatGPT, a helpful AI assistant. Respond naturally and informatively in ${languageInstruction}. Keep responses concise but informative.`,
+              },
+              ...userOnlyHistory.slice(-3),
+              { role: 'user', content: gptPrompt },
+            ];
+            
+            const gptResponse = await openaiChat(messages, {
+              model: OPENAI_CHAT_MODEL,
+              max_tokens: 400,
+              temperature: 0.7,
+            });
+            roundResponses.gpt = gptResponse.choices?.[0]?.message?.content || 'GPT response error';
+            console.log(`[ROUND ${round}] GPT response received:`, roundResponses.gpt.substring(0, 100) + '...');
+          } catch (err) {
+            roundResponses.gpt = `GPT Error: ${err.message}`;
+            console.error(`[ROUND ${round}] GPT error:`, err.message);
+          }
+        }
+
+        if (aiName === 'claude' && activeAIs.claude) {
+          // Claude Implementation
+          try {
+            console.log(`[ROUND ${round}] Step ${i + 1}: Claude responding...`);
+            
+            let claudePrompt = `User question: "${question}"`;
+            
+            if (currentRoundContext) {
+              claudePrompt += `\n\nResponses in this round so far:\n${currentRoundContext}`;
+            }
+
+            if (previousRoundsContext) {
+              claudePrompt += `\n\nPrevious rounds of discussion:${previousRoundsContext}`;
+              claudePrompt += `\n\nThis is round ${round}. Please provide your response considering both the current round responses and the previous discussion rounds.`;
+            } else if (currentRoundContext) {
+              claudePrompt += `\n\nNow please provide your own response to the user's question, and also comment on or expand upon the previous responses if relevant.`;
+            } else {
+              claudePrompt += `\n\nPlease provide your response to the user's question.`;
+            }
+            
+            const msgs = [
+              ...userOnlyHistory.slice(-3).map(m => ({
+                role: 'user',
+                content: m.content,
+              })),
+              { role: 'user', content: claudePrompt },
+            ];
+            
+            const claudeResponse = await anthropic.messages.create({
+              model: CLAUDE_MODEL,
+              max_tokens: 500,
+              system: `You are Claude, an AI assistant created by Anthropic. Be helpful, harmless, and honest. Respond in ${languageInstruction}. You can see what other AIs said and should provide your own perspective while also commenting on previous responses when relevant.`,
+              messages: msgs,
+            });
+            roundResponses.claude = claudeResponse?.content?.[0]?.text || 'Claude response error';
+            console.log(`[ROUND ${round}] Claude response received:`, roundResponses.claude.substring(0, 100) + '...');
+          } catch (err) {
+            roundResponses.claude = `Claude Error: ${err.message}`;
+            console.error(`[ROUND ${round}] Claude error:`, err.message);
+          }
+        }
+
+        if (aiName === 'gemini' && activeAIs.gemini) {
+          // Gemini Implementation
+          try {
+            console.log(`[ROUND ${round}] Step ${i + 1}: Gemini responding...`);
+            
+            // Validate API key first
+            const apiKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
+            if (!apiKey) {
+              throw new Error('Google AI API key not found in environment variables');
+            }
+            
+            // Create model with standard configuration
+            const model = genAI.getGenerativeModel({ 
+              model: GEMINI_MODEL,
+              generationConfig: {
+                maxOutputTokens: 500,
+                temperature: 0.7,
+                topP: 0.8,
+                topK: 40,
+              },
+            });
+            
+            // Prepare conversation history in Gemini format
+            const history = userOnlyHistory.slice(-3).map(msg => ({
+              role: 'user',
+              parts: [{ text: msg.content }],
+            }));
+            
+            // Start chat session
+            const chat = model.startChat({ history });
+            
+            let geminiPrompt = `You are Gemini, Google's AI assistant. Respond naturally and helpfully in ${languageInstruction}.
+
+User question: "${question}"`;
+
+            if (currentRoundContext) {
+              geminiPrompt += `\n\nCurrent round (${round}) responses so far:\n${currentRoundContext}`;
+            }
+
+            if (previousRoundsContext) {
+              geminiPrompt += `\n\nPrevious rounds of discussion:${previousRoundsContext}`;
+              geminiPrompt += `\n\nThis is round ${round} of ${maxRounds}. Please:
+1. Provide your own response to the user's question
+2. Comment on or analyze the current round responses from other AIs
+3. Consider the evolution of the discussion across all rounds
+4. Offer additional insights or perspectives`;
+            } else {
+              geminiPrompt += `\n\nNow please:
+1. Provide your own response to the user's question
+2. Comment on or analyze the previous responses when relevant
+3. Offer any additional insights or perspectives`;
+            }
+
+            geminiPrompt += `\n\nKeep your response informative but concise.`;
+            
+            const result = await chat.sendMessage(geminiPrompt);
+            const response = await result.response;
+            const text = response.text();
+            
+            roundResponses.gemini = text || 'Gemini response error';
+            console.log(`[ROUND ${round}] Gemini response received:`, roundResponses.gemini.substring(0, 100) + '...');
+            
+          } catch (error) {
+            console.error(`[ROUND ${round}] Gemini error:`, error.message);
+            if (error.message.includes('API key')) {
+              roundResponses.gemini = 'Gemini Error: API key issue';
+            } else if (error.message.includes('quota')) {
+              roundResponses.gemini = 'Gemini Error: API quota exceeded';
+            } else if (error.message.includes('network') || error.message.includes('timeout')) {
+              roundResponses.gemini = 'Gemini Error: Network connectivity issue';
+            } else {
+              roundResponses.gemini = `Gemini Error: ${error.message}`;
+            }
+          }
+        }
+      }
+      
+      // Add this round's responses to the collection
+      allRoundsResponses.push(roundResponses);
+      console.log(`[ROUND ${round}] Round ${round} completed successfully`);
+    }
+    
+    // Use the last round's responses as the final responses
+    const finalResponses = allRoundsResponses[allRoundsResponses.length - 1];
+
+    // === Moderator (Dynamic source based on user selection) ===
+    let moderatorText = 'Moderator response unavailable.';
+    
+    if (activeAIs.moderator) {
+      const moderatorPrompts = {
+        neutral: `You are a neutral moderator. Summarize the key points from the AI responses objectively in ${languageInstruction}.`,
+        analytical: `You are an analytical moderator. Compare and analyze the different AI perspectives, highlighting strengths and differences in ${languageInstruction}.`,
+        educational: `You are an educational moderator. Explain the topic in a teaching manner, drawing from all AI responses in ${languageInstruction}.`,
+        creative: `You are a creative moderator. Present the information in an engaging, storytelling manner in ${languageInstruction}.`,
+        'quick-summary': `You are a concise moderator. Provide a brief, clear summary of the key points in ${languageInstruction}.`,
+      };
+      const moderatorPrompt = moderatorPrompts[moderatorStyle] || moderatorPrompts.neutral;
+
+      try {
+        // Build comprehensive context for moderator
+        let moderatorContext = `User asked: "${question}"\n\n`;
+        
+        if (maxRounds > 1) {
+          moderatorContext += `This discussion involved ${maxRounds} rounds of AI conversation:\n\n`;
+          allRoundsResponses.forEach((round, index) => {
+            moderatorContext += `--- Round ${index + 1} ---\n`;
+            if (round.gpt) moderatorContext += `GPT: ${round.gpt}\n`;
+            if (round.claude) moderatorContext += `Claude: ${round.claude}\n`;
+            if (round.gemini) moderatorContext += `Gemini: ${round.gemini}\n`;
+            moderatorContext += '\n';
+          });
+          moderatorContext += `Please provide a moderator response that synthesizes the evolution of this ${maxRounds}-round discussion.`;
+        } else {
+          moderatorContext += `AI Responses:\n`;
+          if (finalResponses.gpt) moderatorContext += `GPT: ${finalResponses.gpt}\n`;
+          if (finalResponses.claude) moderatorContext += `Claude: ${finalResponses.claude}\n`;
+          if (finalResponses.gemini) moderatorContext += `Gemini: ${finalResponses.gemini}\n`;
+          moderatorContext += '\nPlease provide a moderator response that synthesizes these perspectives.';
+        }
+        
+        // Choose moderator source based on user setting
+        if (moderatorSource === 'claude' && activeAIs.claude) {
+          // Use Claude as moderator
+          const msgs = [{ role: 'user', content: moderatorContext }];
+          const claudeResponse = await anthropic.messages.create({
             model: CLAUDE_MODEL,
             max_tokens: 400,
-            system: `You are Claude, an AI assistant created by Anthropic. Be helpful, harmless, and honest. Respond in ${languageInstruction}. Keep responses concise but thorough.`,
+            system: moderatorPrompt,
             messages: msgs,
           });
-          return resp?.content?.[0]?.text || 'Claude response error';
-        } catch (err) {
-          return `Claude Error: ${err.message}`;
-        }
-      })()
-    );
-
-    // Gemini (Google) - Normal text response like other AIs
-    aiPromises.push(
-      (async () => {
-        try {
-          console.log('[GEMINI] Initializing API call for normal text response...');
-          
-          // Validate API key first
+          moderatorText = claudeResponse?.content?.[0]?.text || 'Claude moderator response error';
+        } else if (moderatorSource === 'gemini' && activeAIs.gemini) {
+          // Use Gemini as moderator
           const apiKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
-          if (!apiKey) {
-            throw new Error('Google AI API key not found in environment variables');
-          }
-          
-          console.log('[GEMINI] API Key validated, creating model...');
-          
-          // Create model with standard configuration (no JSON schema)
-          const model = genAI.getGenerativeModel({ 
-            model: GEMINI_MODEL,
-            generationConfig: {
-              maxOutputTokens: 400,
-              temperature: 0.7,
-              topP: 0.8,
-              topK: 40,
-            },
-          });
-          
-          console.log('[GEMINI] Model created with standard text output');
-          
-          // Prepare conversation history in Gemini format
-          const history = conversationHistory.slice(-6).map(msg => ({
-            role: msg.role === 'user' ? 'user' : 'model',
-            parts: [{ text: msg.content }],
-          }));
-          
-          console.log('[GEMINI] Chat history prepared:', history.length, 'messages');
-          
-          // Start chat session
-          const chat = model.startChat({ history });
-          
-          // Simple prompt for natural conversation
-          const prompt = `You are Gemini, Google's AI assistant. Respond naturally and helpfully in ${languageInstruction}. Keep responses concise but informative, just like a normal conversation.
-
-User: ${question}`;
-          
-          console.log('[GEMINI] Sending message...');
-          const result = await chat.sendMessage(prompt);
-          
-          console.log('[GEMINI] Response received successfully');
-          
-          // Extract text response
-          const response = await result.response;
-          const text = response.text();
-          
-          console.log('[GEMINI] Text response extracted:', text?.substring(0, 100) + '...');
-          
-          return text || 'Gemini response error';
-          
-        } catch (error) {
-          console.error('[GEMINI ERROR] Standard text response error:');
-          console.error('[GEMINI ERROR] Error name:', error.name);
-          console.error('[GEMINI ERROR] Error message:', error.message);
-          console.error('[GEMINI ERROR] Error status:', error.status);
-          console.error('[GEMINI ERROR] Error details:', error.details || 'No additional details');
-          
-          // Return user-friendly error message
-          if (error.message.includes('API key')) {
-            return 'Gemini Error: API key issue';
-          } else if (error.message.includes('quota')) {
-            return 'Gemini Error: API quota exceeded';
-          } else if (error.message.includes('network') || error.message.includes('timeout')) {
-            return 'Gemini Error: Network connectivity issue';
+          if (apiKey) {
+            const model = genAI.getGenerativeModel({ 
+              model: GEMINI_MODEL,
+              generationConfig: {
+                maxOutputTokens: 400,
+                temperature: 0.8,
+                topP: 0.8,
+                topK: 40,
+              },
+            });
+            
+            const chat = model.startChat({});
+            const prompt = `${moderatorPrompt}\n\n${moderatorContext}`;
+            const result = await chat.sendMessage(prompt);
+            const response = await result.response;
+            moderatorText = response.text() || 'Gemini moderator response error';
           } else {
-            return `Gemini Error: ${error.message}`;
+            moderatorText = 'Gemini moderator unavailable: API key not found';
           }
+        } else {
+          // Use GPT as moderator (default)
+          const modMessages = [
+            { role: 'system', content: moderatorPrompt },
+            { role: 'user', content: moderatorContext },
+          ];
+          
+          const modJson = await openaiChat(modMessages, {
+            model: OPENAI_CHAT_MODEL,
+            max_tokens: 400,
+            temperature: 0.8,
+          });
+          moderatorText = modJson.choices?.[0]?.message?.content || 'GPT moderator response error';
         }
-      })()
-    );
-
-    const settled = await Promise.allSettled(aiPromises);
-    const aiResponses = {
-      gpt: settled[0].status === 'fulfilled' ? settled[0].value : 'GPT response unavailable',
-      claude: settled[1].status === 'fulfilled' ? settled[1].value : 'Claude response unavailable',
-      gemini: settled[2].status === 'fulfilled' ? settled[2].value : 'Gemini response unavailable',
-    };
-
-    // === Moderator (OpenAI) ===
-    const moderatorPrompts = {
-      neutral: `You are a neutral moderator. Summarize the key points from the AI responses objectively in ${languageInstruction}.`,
-      analytical: `You are an analytical moderator. Compare and analyze the different AI perspectives, highlighting strengths and differences in ${languageInstruction}.`,
-      educational: `You are an educational moderator. Explain the topic in a teaching manner, drawing from all AI responses in ${languageInstruction}.`,
-      creative: `You are a creative moderator. Present the information in an engaging, storytelling manner in ${languageInstruction}.`,
-    };
-    const moderatorPrompt = moderatorPrompts[moderatorStyle] || moderatorPrompts.neutral;
-
-    let moderatorText = 'Moderator response unavailable.';
-    try {
-      const modMessages = [
-        { role: 'system', content: moderatorPrompt },
-        {
-          role: 'user',
-          content:
-            `User asked: "${question}"\n\n` +
-            `AI Responses:\n` +
-            `GPT: ${aiResponses.gpt}\n` +
-            `Claude: ${aiResponses.claude}\n` +
-            `Gemini: ${aiResponses.gemini}\n\n` +
-            `Please provide a moderator response that synthesizes these perspectives.`,
-        },
-      ];
-      const modJson = await openaiChat(modMessages, {
-        model: OPENAI_CHAT_MODEL,
-        max_tokens: 300,
-        temperature: 0.8,
-      });
-      moderatorText = modJson.choices?.[0]?.message?.content || 'Moderator response error';
-    } catch (err) {
-      moderatorText = `Moderator response unavailable: ${err.message}`;
+        
+        console.log('[MODERATOR] Response generated using:', moderatorSource, 'with style:', moderatorStyle);
+        
+      } catch (err) {
+        console.error('[MODERATOR] Error:', err.message);
+        moderatorText = `Moderator response unavailable: ${err.message}`;
+      }
+    } else {
+      console.log('[MODERATOR] Moderator disabled by user');
+      moderatorText = null; // Don't include moderator if disabled
     }
 
-    return res.json({
+    // Build final response object with only enabled AIs
+    const responseData = {
       success: true,
       detectedLanguage: detectedLang,
-      responses: {
-        gpt: aiResponses.gpt,
-        claude: aiResponses.claude,
-        gemini: aiResponses.gemini,
-        moderator: moderatorText,
-      },
-    });
+      roundCount: maxRounds,
+      activeAIs: Object.keys(activeAIs).filter(ai => activeAIs[ai]),
+      moderatorSource: moderatorSource,
+      moderatorStyle: moderatorStyle,
+      responses: {},
+      allRounds: maxRounds > 1 ? allRoundsResponses : undefined, // Include all rounds if multiple
+    };
+
+    // Add AI responses only if they were enabled
+    if (activeAIs.gpt) responseData.responses.gpt = finalResponses.gpt;
+    if (activeAIs.claude) responseData.responses.claude = finalResponses.claude;
+    if (activeAIs.gemini) responseData.responses.gemini = finalResponses.gemini;
+    
+    // Add moderator response only if enabled and generated
+    if (moderatorText) responseData.responses.moderator = moderatorText;
+
+    console.log(`[RESPONSE] Final response includes: ${Object.keys(responseData.responses).join(', ')}`);
+    
+    return res.json(responseData);
   } catch (error) {
     console.error('Chat API Error:', error);
     res.status(500).json({ error: 'Internal server error', details: error.message, success: false });
@@ -386,7 +570,7 @@ app.get('/api/stats', (req, res) => {
 });
 
 // 404
-app.use('*', (req, res) => {
+app.use((req, res) => {
   res.status(404).json({
     error: 'Endpoint not found',
     available_endpoints: ['/health', '/api/chat', '/api/feedback', '/api/stats'],
