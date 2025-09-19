@@ -1,154 +1,134 @@
-// server.js
+// server.js (CommonJS version, require kullanıyor)
+
 const express = require("express");
 const cors = require("cors");
+const bodyParser = require("body-parser");
 const dotenv = require("dotenv");
 const { Configuration, OpenAIApi } = require("openai");
-const Anthropic = require("@anthropic-ai/sdk");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const Anthropic = require("@anthropic-ai/sdk");
 
 dotenv.config();
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+const port = process.env.PORT || 3000;
 
-// ========== OPENAI ==========
+app.use(cors());
+app.use(bodyParser.json());
+
+// === API Keys ===
 const openai = new OpenAIApi(
   new Configuration({
     apiKey: process.env.OPENAI_API_KEY,
   })
 );
 
-// ========== CLAUDE ==========
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// ========== GEMINI ==========
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// === MODELS (latest stable) ===
+const GPT_MODEL = "gpt-4o-mini";
+const CLAUDE_MODEL = "claude-3-5-sonnet-20241022";
+const GEMINI_MODEL = "gemini-2.5-flash";
 
-// ---- Test root endpoint ----
-app.get("/", (req, res) => {
-  res.json({ status: "ok", message: "AI Agora Backend running 🚀" });
-});
+// === Helper functions ===
 
-// ---- GPT ----
-app.post("/api/chat/gpt", async (req, res) => {
+// GPT
+async function callGPT(question, language) {
   try {
-    const { question, language } = req.body;
-    const completion = await openai.createChatCompletion({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: question }],
+    const response = await openai.createChatCompletion({
+      model: GPT_MODEL,
+      messages: [
+        { role: "system", content: `Answer in ${language}` },
+        { role: "user", content: question },
+      ],
     });
-
-    res.json({
-      success: true,
-      role: "gpt",
-      text: completion.data.choices[0].message.content,
-    });
+    return response.data.choices[0].message.content.trim();
   } catch (err) {
-    res.json({ success: false, role: "gpt", text: `Error: ${err.message}` });
+    console.error("GPT error:", err.message);
+    return `GPT Error: ${err.message}`;
   }
-});
+}
 
-// ---- CLAUDE ----
-app.post("/api/chat/claude", async (req, res) => {
+// Claude
+async function callClaude(question, language) {
   try {
-    const { question, language } = req.body;
-    const completion = await anthropic.messages.create({
-      model: "claude-3-5-sonnet-20241022",
-      max_tokens: 512,
-      messages: [{ role: "user", content: question }],
+    const response = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 500,
+      messages: [
+        {
+          role: "user",
+          content: `Answer in ${language}: ${question}`,
+        },
+      ],
     });
-
-    res.json({
-      success: true,
-      role: "claude",
-      text: completion.content[0].text,
-    });
+    return response.content[0].text;
   } catch (err) {
-    res.json({
-      success: false,
-      role: "claude",
-      text: `Error: ${err.message}`,
-    });
+    console.error("Claude error:", err.message);
+    return `Claude Error: ${err.message}`;
   }
-});
+}
 
-// ---- GEMINI ----
-app.post("/api/chat/gemini", async (req, res) => {
+// Gemini
+async function callGemini(question, language) {
   try {
-    const { question, language } = req.body;
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-    const result = await model.generateContent(question);
-    const text = result.response.text();
-
-    res.json({
-      success: true,
-      role: "gemini",
-      text,
-    });
+    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+    const response = await model.generateContent(
+      `Answer in ${language}: ${question}`
+    );
+    return response.response.text();
   } catch (err) {
-    res.json({
-      success: false,
-      role: "gemini",
-      text: `Error: ${err.message}`,
-    });
+    console.error("Gemini error:", err.message);
+    return `Gemini Error: ${err.message}`;
   }
-});
+}
 
-// ---- Combined endpoint (hepsi aynı anda) ----
+// === API endpoints ===
+
+// Unified chat endpoint
 app.post("/api/chat", async (req, res) => {
-  const { question, language, includeGPT, includeClaude, includeGemini } =
-    req.body;
+  const {
+    question,
+    language,
+    includeGPT,
+    includeClaude,
+    includeGemini,
+    includeModerator,
+    moderatorSource,
+    moderatorStyle,
+  } = req.body;
 
   const responses = {};
 
-  try {
-    if (includeGPT) {
-      const completion = await openai.createChatCompletion({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: question }],
-      });
-      responses.gpt = completion.data.choices[0].message.content;
-    }
-  } catch (err) {
-    responses.gpt = `Error: ${err.message}`;
+  if (includeGPT) responses.gpt = await callGPT(question, language);
+  if (includeClaude) responses.claude = await callClaude(question, language);
+  if (includeGemini) responses.gemini = await callGemini(question, language);
+
+  if (includeModerator) {
+    const collected = Object.entries(responses)
+      .map(([k, v]) => `${k.toUpperCase()}: ${v}`)
+      .join("\n\n");
+
+    const modPrompt = `You are the Moderator AI. Summarize these answers in style: ${moderatorStyle}.
+    
+${collected}`;
+
+    responses.moderator = await callGPT(modPrompt, language);
   }
 
-  try {
-    if (includeClaude) {
-      const completion = await anthropic.messages.create({
-        model: "claude-3-5-sonnet-20241022",
-        max_tokens: 512,
-        messages: [{ role: "user", content: question }],
-      });
-      responses.claude = completion.content[0].text;
-    }
-  } catch (err) {
-    responses.claude = `Error: ${err.message}`;
-  }
-
-  try {
-    if (includeGemini) {
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-      const result = await model.generateContent(question);
-      responses.gemini = result.response.text();
-    }
-  } catch (err) {
-    responses.gemini = `Error: ${err.message}`;
-  }
-
-  res.json({
-    success: true,
-    detectedLanguage: language || "en",
-    responses,
-  });
+  res.json({ success: true, detectedLanguage: language, responses });
 });
 
-// ---- Start server ----
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+// === Health check ===
+app.get("/", (req, res) => {
+  res.send("AI Agora Backend is running ✅");
+});
+
+// Start server
+app.listen(port, () => {
+  console.log(`Server listening on port ${port}`);
 });
