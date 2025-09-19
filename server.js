@@ -43,7 +43,20 @@ if (!process.env.GOOGLE_AI_API_KEY) {
 
 // ====== CLIENTS ======
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY);
+
+// Google AI client with improved error handling
+let genAI;
+try {
+  const googleApiKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
+  if (googleApiKey) {
+    genAI = new GoogleGenerativeAI(googleApiKey);
+    console.log('[INIT] Google AI client initialized successfully');
+  } else {
+    console.warn('[INIT] Google AI API key not found - Gemini will be unavailable');
+  }
+} catch (error) {
+  console.error('[INIT] Failed to initialize Google AI client:', error.message);
+}
 
 // ====== MODEL CHOICES (auto “latest”) ======
 // OpenAI: use modern “gpt-4.1” series via REST (no SDK surface mismatch)
@@ -118,6 +131,12 @@ app.get('/health', (req, res) => {
       anthropic: CLAUDE_MODEL,
       gemini: GEMINI_MODEL,
     },
+    features: {
+      structuredOutput: true,
+      languageDetection: true,
+      parallelProcessing: true,
+      moderatorStyles: ['neutral', 'analytical', 'educational', 'creative'],
+    },
   });
 });
 
@@ -128,6 +147,7 @@ app.post('/api/chat', async (req, res) => {
       language,
       conversation = [],
       moderatorStyle = 'neutral',
+      structuredOutput = false, // New option for structured responses
       // (iOS artık model göndermiyor; backend auto-select yapıyor)
     } = req.body;
 
@@ -197,49 +217,167 @@ app.post('/api/chat', async (req, res) => {
       })()
     );
 
-    // Gemini (Google) - DEBUG VERSION
+    // Gemini (Google) - Enhanced with Structured Output support
     aiPromises.push(
       (async () => {
         try {
-          console.log('[GEMINI] Starting API call...');
-          console.log('[GEMINI] API Key exists:', !!process.env.GOOGLE_AI_API_KEY);
-          console.log('[GEMINI] Model name:', GEMINI_MODEL);
+          console.log('[GEMINI] Initializing API call with structured output support...');
           
-          const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-          console.log('[GEMINI] Model created successfully');
+          // Validate API key first
+          const apiKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
+          if (!apiKey) {
+            throw new Error('Google AI API key not found in environment variables');
+          }
           
-          const history = conversationHistory.slice(-6).map(m => ({
-            role: m.role === 'user' ? 'user' : 'model',
-            parts: [{ text: m.content }],
-          }));
-          console.log('[GEMINI] History prepared:', history.length, 'messages');
+          console.log('[GEMINI] API Key validated, creating model with structured output...');
           
-          const chat = model.startChat({
-            history,
-            generationConfig: { 
-              maxOutputTokens: 400, 
-              temperature: 0.7,
-              thinkingConfig: {
-                thinkingBudget: 0  // Disable thinking to prevent MAX_TOKENS issue
+          // Define structured response schema for consistent AI responses
+          const responseSchema = {
+            type: "object",
+            properties: {
+              content: {
+                type: "string",
+                description: "The main response content"
+              },
+              confidence: {
+                type: "string",
+                enum: ["high", "medium", "low"],
+                description: "Confidence level of the response"
+              },
+              language: {
+                type: "string",
+                description: "Language of the response"
+              },
+              keywords: {
+                type: "array",
+                items: { type: "string" },
+                maxItems: 5,
+                description: "Key topics covered in the response"
               }
             },
+            required: ["content", "confidence", "language"],
+            propertyOrdering: ["content", "confidence", "language", "keywords"]
+          };
+          
+          // Create model with structured output configuration
+          const model = genAI.getGenerativeModel({ 
+            model: GEMINI_MODEL,
+            generationConfig: {
+              maxOutputTokens: 500,
+              temperature: 0.7,
+              topP: 0.8,
+              topK: 40,
+              responseMimeType: "application/json",
+              responseSchema: responseSchema,
+            },
           });
-          console.log('[GEMINI] Chat started');
           
-          const result = await chat.sendMessage(`Please respond in ${languageInstruction}: ${question}`);
-          console.log('[GEMINI] Response received successfully');
-          console.log('[GEMINI] Raw result:', JSON.stringify(result, null, 2));
+          console.log('[GEMINI] Model created with structured JSON output config');
           
-          const text = result?.response?.text();
-          console.log('[GEMINI] Extracted text:', text);
+          // Prepare conversation history in Gemini format
+          const history = conversationHistory.slice(-6).map(msg => ({
+            role: msg.role === 'user' ? 'user' : 'model',
+            parts: [{ text: msg.content }],
+          }));
           
-          return text || 'Gemini response error';
-        } catch (err) {
-          console.error('[GEMINI ERROR] Status:', err.status);
-          console.error('[GEMINI ERROR] Code:', err.code);
-          console.error('[GEMINI ERROR] Message:', err.message);
-          console.error('[GEMINI ERROR] Full error:', JSON.stringify(err, null, 2));
-          return `Gemini Error: ${err.message}`;
+          console.log('[GEMINI] Chat history prepared:', history.length, 'messages');
+          
+          // Start chat session
+          const chat = model.startChat({ history });
+          
+          // Enhanced prompt for structured output
+          const prompt = `You are Gemini, Google's AI assistant. Provide a helpful and accurate response in ${languageInstruction}.
+          
+Instructions:
+- Respond with structured JSON containing: content (main response), confidence (high/medium/low), language (detected language), and optional keywords array
+- Keep content concise but informative (max 400 tokens)
+- Be honest about your confidence level
+- Include relevant keywords for the topic
+
+User question: ${question}`;
+          
+          console.log('[GEMINI] Sending structured output request...');
+          const result = await chat.sendMessage(prompt);
+          
+          console.log('[GEMINI] Structured response received successfully');
+          
+          // Extract and parse structured response
+          const response = await result.response;
+          const jsonText = response.text();
+          
+          console.log('[GEMINI] Raw JSON response:', jsonText);
+          
+          // Parse the structured JSON response
+          try {
+            const structuredResponse = JSON.parse(jsonText);
+            console.log('[GEMINI] Parsed structured response:', structuredResponse);
+            
+            // Return the content with metadata
+            const content = structuredResponse.content || jsonText;
+            const confidence = structuredResponse.confidence || 'medium';
+            const keywords = structuredResponse.keywords || [];
+            
+            console.log('[GEMINI] Response extracted - Confidence:', confidence, 'Keywords:', keywords);
+            
+            return content;
+            
+          } catch (parseError) {
+            console.warn('[GEMINI] JSON parsing failed, using raw text:', parseError.message);
+            return jsonText || 'Gemini response error';
+          }
+          
+        } catch (error) {
+          console.error('[GEMINI ERROR] Structured output error:');
+          console.error('[GEMINI ERROR] Error name:', error.name);
+          console.error('[GEMINI ERROR] Error message:', error.message);
+          console.error('[GEMINI ERROR] Error status:', error.status);
+          console.error('[GEMINI ERROR] Error details:', error.details || 'No additional details');
+          
+          // Fallback to simple text generation if structured output fails
+          try {
+            console.log('[GEMINI] Attempting fallback to simple text generation...');
+            
+            const fallbackModel = genAI.getGenerativeModel({ 
+              model: GEMINI_MODEL,
+              generationConfig: {
+                maxOutputTokens: 400,
+                temperature: 0.7,
+                topP: 0.8,
+                topK: 40,
+              },
+            });
+            
+            const fallbackChat = fallbackModel.startChat({ 
+              history: conversationHistory.slice(-6).map(msg => ({
+                role: msg.role === 'user' ? 'user' : 'model',
+                parts: [{ text: msg.content }],
+              }))
+            });
+            
+            const fallbackResult = await fallbackChat.sendMessage(
+              `You are Gemini, Google's AI assistant. Respond in ${languageInstruction}: ${question}`
+            );
+            
+            const fallbackResponse = await fallbackResult.response;
+            const fallbackText = fallbackResponse.text();
+            
+            console.log('[GEMINI] Fallback response successful');
+            return fallbackText || 'Gemini response error';
+            
+          } catch (fallbackError) {
+            console.error('[GEMINI] Fallback also failed:', fallbackError.message);
+            
+            // Return user-friendly error message
+            if (error.message.includes('API key')) {
+              return 'Gemini Error: API key issue';
+            } else if (error.message.includes('quota')) {
+              return 'Gemini Error: API quota exceeded';
+            } else if (error.message.includes('network') || error.message.includes('timeout')) {
+              return 'Gemini Error: Network connectivity issue';
+            } else {
+              return `Gemini Error: ${error.message}`;
+            }
+          }
         }
       })()
     );
