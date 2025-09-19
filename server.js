@@ -217,11 +217,11 @@ app.post('/api/chat', async (req, res) => {
       })()
     );
 
-    // Gemini (Google) - Enhanced with Structured Output support
+    // Gemini (Google) - Normal text response like other AIs
     aiPromises.push(
       (async () => {
         try {
-          console.log('[GEMINI] Initializing API call with structured output support...');
+          console.log('[GEMINI] Initializing API call for normal text response...');
           
           // Validate API key first
           const apiKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
@@ -229,50 +229,20 @@ app.post('/api/chat', async (req, res) => {
             throw new Error('Google AI API key not found in environment variables');
           }
           
-          console.log('[GEMINI] API Key validated, creating model with structured output...');
+          console.log('[GEMINI] API Key validated, creating model...');
           
-          // Define structured response schema for consistent AI responses
-          const responseSchema = {
-            type: "object",
-            properties: {
-              content: {
-                type: "string",
-                description: "The main response content"
-              },
-              confidence: {
-                type: "string",
-                enum: ["high", "medium", "low"],
-                description: "Confidence level of the response"
-              },
-              language: {
-                type: "string",
-                description: "Language of the response"
-              },
-              keywords: {
-                type: "array",
-                items: { type: "string" },
-                maxItems: 5,
-                description: "Key topics covered in the response"
-              }
-            },
-            required: ["content", "confidence", "language"],
-            propertyOrdering: ["content", "confidence", "language", "keywords"]
-          };
-          
-          // Create model with structured output configuration
+          // Create model with standard configuration (no JSON schema)
           const model = genAI.getGenerativeModel({ 
             model: GEMINI_MODEL,
             generationConfig: {
-              maxOutputTokens: 500,
+              maxOutputTokens: 400,
               temperature: 0.7,
               topP: 0.8,
               topK: 40,
-              responseMimeType: "application/json",
-              responseSchema: responseSchema,
             },
           });
           
-          console.log('[GEMINI] Model created with structured JSON output config');
+          console.log('[GEMINI] Model created with standard text output');
           
           // Prepare conversation history in Gemini format
           const history = conversationHistory.slice(-6).map(msg => ({
@@ -285,98 +255,40 @@ app.post('/api/chat', async (req, res) => {
           // Start chat session
           const chat = model.startChat({ history });
           
-          // Enhanced prompt for structured output
-          const prompt = `You are Gemini, Google's AI assistant. Provide a helpful and accurate response in ${languageInstruction}.
-          
-Instructions:
-- Respond with structured JSON containing: content (main response), confidence (high/medium/low), language (detected language), and optional keywords array
-- Keep content concise but informative (max 400 tokens)
-- Be honest about your confidence level
-- Include relevant keywords for the topic
+          // Simple prompt for natural conversation
+          const prompt = `You are Gemini, Google's AI assistant. Respond naturally and helpfully in ${languageInstruction}. Keep responses concise but informative, just like a normal conversation.
 
-User question: ${question}`;
+User: ${question}`;
           
-          console.log('[GEMINI] Sending structured output request...');
+          console.log('[GEMINI] Sending message...');
           const result = await chat.sendMessage(prompt);
           
-          console.log('[GEMINI] Structured response received successfully');
+          console.log('[GEMINI] Response received successfully');
           
-          // Extract and parse structured response
+          // Extract text response
           const response = await result.response;
-          const jsonText = response.text();
+          const text = response.text();
           
-          console.log('[GEMINI] Raw JSON response:', jsonText);
+          console.log('[GEMINI] Text response extracted:', text?.substring(0, 100) + '...');
           
-          // Parse the structured JSON response
-          try {
-            const structuredResponse = JSON.parse(jsonText);
-            console.log('[GEMINI] Parsed structured response:', structuredResponse);
-            
-            // Return the content with metadata
-            const content = structuredResponse.content || jsonText;
-            const confidence = structuredResponse.confidence || 'medium';
-            const keywords = structuredResponse.keywords || [];
-            
-            console.log('[GEMINI] Response extracted - Confidence:', confidence, 'Keywords:', keywords);
-            
-            return content;
-            
-          } catch (parseError) {
-            console.warn('[GEMINI] JSON parsing failed, using raw text:', parseError.message);
-            return jsonText || 'Gemini response error';
-          }
+          return text || 'Gemini response error';
           
         } catch (error) {
-          console.error('[GEMINI ERROR] Structured output error:');
+          console.error('[GEMINI ERROR] Standard text response error:');
           console.error('[GEMINI ERROR] Error name:', error.name);
           console.error('[GEMINI ERROR] Error message:', error.message);
           console.error('[GEMINI ERROR] Error status:', error.status);
           console.error('[GEMINI ERROR] Error details:', error.details || 'No additional details');
           
-          // Fallback to simple text generation if structured output fails
-          try {
-            console.log('[GEMINI] Attempting fallback to simple text generation...');
-            
-            const fallbackModel = genAI.getGenerativeModel({ 
-              model: GEMINI_MODEL,
-              generationConfig: {
-                maxOutputTokens: 400,
-                temperature: 0.7,
-                topP: 0.8,
-                topK: 40,
-              },
-            });
-            
-            const fallbackChat = fallbackModel.startChat({ 
-              history: conversationHistory.slice(-6).map(msg => ({
-                role: msg.role === 'user' ? 'user' : 'model',
-                parts: [{ text: msg.content }],
-              }))
-            });
-            
-            const fallbackResult = await fallbackChat.sendMessage(
-              `You are Gemini, Google's AI assistant. Respond in ${languageInstruction}: ${question}`
-            );
-            
-            const fallbackResponse = await fallbackResult.response;
-            const fallbackText = fallbackResponse.text();
-            
-            console.log('[GEMINI] Fallback response successful');
-            return fallbackText || 'Gemini response error';
-            
-          } catch (fallbackError) {
-            console.error('[GEMINI] Fallback also failed:', fallbackError.message);
-            
-            // Return user-friendly error message
-            if (error.message.includes('API key')) {
-              return 'Gemini Error: API key issue';
-            } else if (error.message.includes('quota')) {
-              return 'Gemini Error: API quota exceeded';
-            } else if (error.message.includes('network') || error.message.includes('timeout')) {
-              return 'Gemini Error: Network connectivity issue';
-            } else {
-              return `Gemini Error: ${error.message}`;
-            }
+          // Return user-friendly error message
+          if (error.message.includes('API key')) {
+            return 'Gemini Error: API key issue';
+          } else if (error.message.includes('quota')) {
+            return 'Gemini Error: API quota exceeded';
+          } else if (error.message.includes('network') || error.message.includes('timeout')) {
+            return 'Gemini Error: Network connectivity issue';
+          } else {
+            return `Gemini Error: ${error.message}`;
           }
         }
       })()
