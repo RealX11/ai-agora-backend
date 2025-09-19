@@ -366,7 +366,7 @@ app.post('/api/chat', async (req, res) => {
             const chat = model.startChat({ history });
             
 
-User question: "${question}"`;
+console.log(`User question: ${question}`);
 
             if (currentRoundContext) {
               geminiPrompt += `\n\nOther AI responses: ${currentRoundContext}`;
