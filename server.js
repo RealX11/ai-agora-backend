@@ -149,9 +149,19 @@ app.post('/api/chat', async (req, res) => {
       moderatorStyle = 'neutral',
       structuredOutput = false,
       roundCount = 1,
-      // New AI selection parameters
-      enabledAIs = { gpt: true, claude: true, gemini: true, moderator: true },
-      moderatorSource = 'gpt', // Which AI will be the moderator source
+      // iOS app compatibility parameters
+      includeGPT = true,
+      includeClaude = true, 
+      includeGemini = true,
+      includeModerator = true,
+      moderatorSource = 'gpt',
+      // New AI selection parameters (fallback to iOS params)
+      enabledAIs = { 
+        gpt: includeGPT === true, 
+        claude: includeClaude === true, 
+        gemini: includeGemini === true, 
+        moderator: includeModerator === true 
+      },
       // (iOS artık model göndermiyor; backend auto-select yapıyor)
     } = req.body;
 
@@ -161,6 +171,27 @@ app.post('/api/chat', async (req, res) => {
 
     const detectedLang = language || detectLanguage(question);
     const languageInstruction = langLabel(detectedLang);
+
+    // iOS ModeratorStyle compatibility mapping
+    const moderatorStyleMapping = {
+      'Quick Summary': 'quick-summary',
+      'Best Answer': 'neutral', 
+      'Action Steps': 'educational',
+      'Detailed Analysis': 'analytical'
+    };
+    
+    const finalModeratorStyle = moderatorStyleMapping[moderatorStyle] || moderatorStyle || 'neutral';
+    console.log('[MODERATOR STYLE] iOS sent:', moderatorStyle, '→ Backend using:', finalModeratorStyle);
+
+    // iOS moderatorSource compatibility (convert ChatMessage.Role to string)
+    const moderatorSourceMapping = {
+      'GPT': 'gpt',
+      'Claude': 'claude', 
+      'Gemini': 'gemini'
+    };
+    
+    const finalModeratorSource = moderatorSourceMapping[moderatorSource] || moderatorSource || 'gpt';
+    console.log('[MODERATOR SOURCE] iOS sent:', moderatorSource, '→ Backend using:', finalModeratorSource);
 
     // Normalize conversation history for different providers
     const conversationHistory = (Array.isArray(conversation) ? conversation : [])
@@ -178,19 +209,22 @@ app.post('/api/chat', async (req, res) => {
     console.log('[DEBUG] User-only history for AIs:', userOnlyHistory.length, 'messages');
 
     // Validate round count
-    const maxRounds = Math.max(1, Math.min(roundCount || 1, 5)); // Limit to 1-5 rounds
+    const maxRounds = Math.max(1, Math.min(roundCount || 1, 3)); // Limit to 1-3 rounds
     console.log('[ROUNDS] Processing', maxRounds, 'rounds of AI conversation');
+    
+    console.log('[DEBUG] Incoming iOS params:', { includeGPT, includeClaude, includeGemini, includeModerator });
+    console.log('[DEBUG] Resolved enabledAIs:', enabledAIs);
     
     // Validate enabled AIs
     const activeAIs = {
-      gpt: enabledAIs?.gpt !== false,
-      claude: enabledAIs?.claude !== false,
-      gemini: enabledAIs?.gemini !== false,
-      moderator: enabledAIs?.moderator !== false
+      gpt: enabledAIs?.gpt === true,
+      claude: enabledAIs?.claude === true,
+      gemini: enabledAIs?.gemini === true,
+      moderator: enabledAIs?.moderator === true
     };
     
     console.log('[AI SELECTION] Active AIs:', activeAIs);
-    console.log('[MODERATOR] Source:', moderatorSource, 'Style:', moderatorStyle);
+    console.log('[MODERATOR] Source:', finalModeratorSource, 'Style:', finalModeratorStyle);
 
     // Determine AI execution order based on enabled AIs
     const aiOrder = [];
@@ -250,23 +284,23 @@ app.post('/api/chat', async (req, res) => {
             
             let gptPrompt = question;
             if (round > 1 || currentRoundContext) {
-              gptPrompt = `User question: "${question}"`;
+              gptPrompt = `Question: "${question}"`;
               
               if (previousRoundsContext) {
-                gptPrompt += `\n\nPrevious rounds of discussion:${previousRoundsContext}`;
+                gptPrompt += `\n\nPrevious: ${previousRoundsContext}`;
               }
               
               if (currentRoundContext) {
-                gptPrompt += `\n\nCurrent round responses so far:\n${currentRoundContext}`;
+                gptPrompt += `\n\nOther responses: ${currentRoundContext}`;
               }
               
-              gptPrompt += `\n\nThis is round ${round}. Please provide your response to the original question, taking into account the previous discussion${currentRoundContext ? ' and current round responses' : ''}.`;
+              gptPrompt += `\n\nBrief response please.`;
             }
             
             const messages = [
               {
                 role: 'system',
-                content: `You are ChatGPT, a helpful AI assistant. Respond naturally and informatively in ${languageInstruction}. Keep responses concise but informative.`,
+                content: `You are ChatGPT. Respond briefly in ${languageInstruction}. Keep answers short and helpful.`,
               },
               ...userOnlyHistory.slice(-3),
               { role: 'user', content: gptPrompt },
@@ -274,7 +308,7 @@ app.post('/api/chat', async (req, res) => {
             
             const gptResponse = await openaiChat(messages, {
               model: OPENAI_CHAT_MODEL,
-              max_tokens: 400,
+              max_tokens: 150, // Reduced from 400 for faster responses
               temperature: 0.7,
             });
             roundResponses.gpt = gptResponse.choices?.[0]?.message?.content || 'GPT response error';
@@ -290,19 +324,19 @@ app.post('/api/chat', async (req, res) => {
           try {
             console.log(`[ROUND ${round}] Step ${i + 1}: Claude responding...`);
             
-            let claudePrompt = `User question: "${question}"`;
+            let claudePrompt = `Question: "${question}"`;
             
             if (currentRoundContext) {
-              claudePrompt += `\n\nResponses in this round so far:\n${currentRoundContext}`;
+              claudePrompt += `\n\nOther responses: ${currentRoundContext}`;
             }
 
             if (previousRoundsContext) {
-              claudePrompt += `\n\nPrevious rounds of discussion:${previousRoundsContext}`;
-              claudePrompt += `\n\nThis is round ${round}. Please provide your response considering both the current round responses and the previous discussion rounds.`;
+              claudePrompt += `\n\nPrevious: ${previousRoundsContext}`;
+              claudePrompt += `\n\nBrief response please.`;
             } else if (currentRoundContext) {
-              claudePrompt += `\n\nNow please provide your own response to the user's question, and also comment on or expand upon the previous responses if relevant.`;
+              claudePrompt += `\n\nProvide a brief response.`;
             } else {
-              claudePrompt += `\n\nPlease provide your response to the user's question.`;
+              claudePrompt += `\n\nBrief answer please.`;
             }
             
             const msgs = [
@@ -315,8 +349,8 @@ app.post('/api/chat', async (req, res) => {
             
             const claudeResponse = await anthropic.messages.create({
               model: CLAUDE_MODEL,
-              max_tokens: 500,
-              system: `You are Claude, an AI assistant created by Anthropic. Be helpful, harmless, and honest. Respond in ${languageInstruction}. You can see what other AIs said and should provide your own perspective while also commenting on previous responses when relevant.`,
+              max_tokens: 150, // Reduced from 500 for faster responses
+              system: `You are Claude, an AI assistant. Respond concisely in ${languageInstruction}. Keep answers brief but helpful.`,
               messages: msgs,
             });
             roundResponses.claude = claudeResponse?.content?.[0]?.text || 'Claude response error';
@@ -342,7 +376,7 @@ app.post('/api/chat', async (req, res) => {
             const model = genAI.getGenerativeModel({ 
               model: GEMINI_MODEL,
               generationConfig: {
-                maxOutputTokens: 500,
+                maxOutputTokens: 150, // Reduced from 500 for faster responses
                 temperature: 0.7,
                 topP: 0.8,
                 topK: 40,
@@ -358,29 +392,22 @@ app.post('/api/chat', async (req, res) => {
             // Start chat session
             const chat = model.startChat({ history });
             
-            let geminiPrompt = `You are Gemini, Google's AI assistant. Respond naturally and helpfully in ${languageInstruction}.
+            let geminiPrompt = `You are Gemini. Respond concisely in ${languageInstruction}.
 
 User question: "${question}"`;
 
             if (currentRoundContext) {
-              geminiPrompt += `\n\nCurrent round (${round}) responses so far:\n${currentRoundContext}`;
+              geminiPrompt += `\n\nOther AI responses: ${currentRoundContext}`;
             }
 
             if (previousRoundsContext) {
-              geminiPrompt += `\n\nPrevious rounds of discussion:${previousRoundsContext}`;
-              geminiPrompt += `\n\nThis is round ${round} of ${maxRounds}. Please:
-1. Provide your own response to the user's question
-2. Comment on or analyze the current round responses from other AIs
-3. Consider the evolution of the discussion across all rounds
-4. Offer additional insights or perspectives`;
+              geminiPrompt += `\n\nPrevious discussion: ${previousRoundsContext}`;
+              geminiPrompt += `\n\nProvide a brief response considering the previous discussion.`;
             } else {
-              geminiPrompt += `\n\nNow please:
-1. Provide your own response to the user's question
-2. Comment on or analyze the previous responses when relevant
-3. Offer any additional insights or perspectives`;
+              geminiPrompt += `\n\nProvide a brief, helpful response.`;
             }
 
-            geminiPrompt += `\n\nKeep your response informative but concise.`;
+            geminiPrompt += `\n\nKeep response brief and informative.`;
             
             const result = await chat.sendMessage(geminiPrompt);
             const response = await result.response;
@@ -417,13 +444,13 @@ User question: "${question}"`;
     
     if (activeAIs.moderator) {
       const moderatorPrompts = {
-        neutral: `You are a neutral moderator. Summarize the key points from the AI responses objectively in ${languageInstruction}.`,
-        analytical: `You are an analytical moderator. Compare and analyze the different AI perspectives, highlighting strengths and differences in ${languageInstruction}.`,
-        educational: `You are an educational moderator. Explain the topic in a teaching manner, drawing from all AI responses in ${languageInstruction}.`,
-        creative: `You are a creative moderator. Present the information in an engaging, storytelling manner in ${languageInstruction}.`,
-        'quick-summary': `You are a concise moderator. Provide a brief, clear summary of the key points in ${languageInstruction}.`,
+        neutral: `Summarize key points briefly in ${languageInstruction}.`,
+        analytical: `Compare AI perspectives briefly in ${languageInstruction}.`,
+        educational: `Explain briefly in ${languageInstruction}.`,
+        creative: `Present information creatively but briefly in ${languageInstruction}.`,
+        'quick-summary': `Very brief summary in ${languageInstruction}. 1-2 sentences max.`,
       };
-      const moderatorPrompt = moderatorPrompts[moderatorStyle] || moderatorPrompts.neutral;
+      const moderatorPrompt = moderatorPrompts[finalModeratorStyle] || moderatorPrompts.neutral;
 
       try {
         // Build comprehensive context for moderator
@@ -448,24 +475,26 @@ User question: "${question}"`;
         }
         
         // Choose moderator source based on user setting
-        if (moderatorSource === 'claude' && activeAIs.claude) {
+        const moderatorTokens = finalModeratorStyle === 'quick-summary' ? 100 : 200; // Much shorter for quick summary
+        
+        if (finalModeratorSource === 'claude' && activeAIs.claude) {
           // Use Claude as moderator
           const msgs = [{ role: 'user', content: moderatorContext }];
           const claudeResponse = await anthropic.messages.create({
             model: CLAUDE_MODEL,
-            max_tokens: 400,
+            max_tokens: moderatorTokens,
             system: moderatorPrompt,
             messages: msgs,
           });
           moderatorText = claudeResponse?.content?.[0]?.text || 'Claude moderator response error';
-        } else if (moderatorSource === 'gemini' && activeAIs.gemini) {
+        } else if (finalModeratorSource === 'gemini' && activeAIs.gemini) {
           // Use Gemini as moderator
           const apiKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
           if (apiKey) {
             const model = genAI.getGenerativeModel({ 
               model: GEMINI_MODEL,
               generationConfig: {
-                maxOutputTokens: 400,
+                maxOutputTokens: moderatorTokens,
                 temperature: 0.8,
                 topP: 0.8,
                 topK: 40,
@@ -489,13 +518,13 @@ User question: "${question}"`;
           
           const modJson = await openaiChat(modMessages, {
             model: OPENAI_CHAT_MODEL,
-            max_tokens: 400,
+            max_tokens: moderatorTokens,
             temperature: 0.8,
           });
           moderatorText = modJson.choices?.[0]?.message?.content || 'GPT moderator response error';
         }
         
-        console.log('[MODERATOR] Response generated using:', moderatorSource, 'with style:', moderatorStyle);
+        console.log('[MODERATOR] Response generated using:', finalModeratorSource, 'with style:', finalModeratorStyle);
         
       } catch (err) {
         console.error('[MODERATOR] Error:', err.message);
@@ -512,8 +541,8 @@ User question: "${question}"`;
       detectedLanguage: detectedLang,
       roundCount: maxRounds,
       activeAIs: Object.keys(activeAIs).filter(ai => activeAIs[ai]),
-      moderatorSource: moderatorSource,
-      moderatorStyle: moderatorStyle,
+      moderatorSource: finalModeratorSource,
+      moderatorStyle: finalModeratorStyle,
       responses: {},
       allRounds: maxRounds > 1 ? allRoundsResponses : undefined, // Include all rounds if multiple
     };
