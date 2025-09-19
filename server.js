@@ -169,8 +169,7 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Question is required', success: false });
     }
 
-    const detectedLang = language || detectLanguage(question);
-    const languageInstruction = langLabel(detectedLang);
+    const languageInstruction = "the same language the user used";
 
     // iOS ModeratorStyle compatibility mapping
     const moderatorStyleMapping = {
@@ -538,7 +537,6 @@ User question: "${question}"`;
     // Build final response object with only enabled AIs
     const responseData = {
       success: true,
-      detectedLanguage: detectedLang,
       roundCount: maxRounds,
       activeAIs: Object.keys(activeAIs).filter(ai => activeAIs[ai]),
       moderatorSource: finalModeratorSource,
