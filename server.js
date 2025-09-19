@@ -43,7 +43,7 @@ if (!process.env.GOOGLE_AI_API_KEY) {
 
 // ====== CLIENTS ======
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY);
 
 // ====== MODEL CHOICES (auto “latest”) ======
 // OpenAI: use modern “gpt-4.1” series via REST (no SDK surface mismatch)
@@ -222,8 +222,12 @@ app.post('/api/chat', async (req, res) => {
           
           const result = await chat.sendMessage(`Please respond in ${languageInstruction}: ${question}`);
           console.log('[GEMINI] Response received successfully');
+          console.log('[GEMINI] Raw result:', JSON.stringify(result, null, 2));
           
-          return result?.response?.text() || 'Gemini response error';
+          const text = result?.response?.text();
+          console.log('[GEMINI] Extracted text:', text);
+          
+          return text || 'Gemini response error';
         } catch (err) {
           console.error('[GEMINI ERROR] Status:', err.status);
           console.error('[GEMINI ERROR] Code:', err.code);
