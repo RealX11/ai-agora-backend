@@ -1,5 +1,26 @@
 // server.js — AI Agora Backend (modernized, auto-latest models)
 
+// Memory monitoring ve crash prevention
+setInterval(() => {
+  const memUsage = process.memoryUsage();
+  console.log(`[MEMORY] Heap: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`);
+  
+  // 400MB'dan fazla kullanılırsa warning
+  if (memUsage.heapUsed > 400 * 1024 * 1024) {
+    console.warn('[WARNING] High memory usage detected');
+  }
+}, 10000); // Her 10 saniyede kontrol
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('[SHUTDOWN] SIGTERM received, shutting down gracefully');
+  process.exit(0);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[ERROR] Unhandled Rejection:', reason);
+});
+
 const express = require('express');
 const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
