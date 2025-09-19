@@ -67,10 +67,10 @@ try {
 // ====== MODEL CHOICES (auto "latest") ======
 // OpenAI: latest stable GPT-4 model
 const OPENAI_CHAT_MODEL = 'gpt-4o';
-// Anthropic: latest Claude model
-const CLAUDE_MODEL = 'claude-3-5-sonnet-20241022';
-// Google: latest stable Gemini 2.5 Pro model
-const GEMINI_MODEL = "gemini-2.0-flash-exp";
+// Anthropic: latest Claude model (Claude Sonnet 4)
+const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+// Google: latest stable Gemini model (Gemini 2.5 Pro)
+const GEMINI_MODEL = "gemini-2.5-pro";
 
 // ====== MIDDLEWARE ======
 app.use(cors());
@@ -355,7 +355,13 @@ app.post('/api/chat', async (req, res) => {
         streamingPromises.push((async () => {
           let fullResponse = '';
           try {
-            const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+            const model = genAI.getGenerativeModel({ 
+              model: GEMINI_MODEL,
+              generationConfig: {
+                maxOutputTokens: 400,
+                temperature: 0.7,
+              }
+            });
             const chat = model.startChat({
               history: userOnlyHistory.slice(-3).map(m => ({ role: 'user', parts: [{ text: m.content }] })),
             });
@@ -372,7 +378,9 @@ app.post('/api/chat', async (req, res) => {
           } catch (err) {
             console.error('[STREAM] Gemini Error:', err.message);
             fullResponse = `Gemini Error: ${err.message}`;
-            sendSse(res, 'error', { ai: 'gemini', message: err.message });
+            if (!res.writableEnded) {
+              sendSse(res, 'error', { ai: 'gemini', message: err.message });
+            }
           }
           roundResponses.gemini = fullResponse;
           if (!res.writableEnded) {
@@ -381,16 +389,20 @@ app.post('/api/chat', async (req, res) => {
         })());
       }
 
-      await Promise.all(streamingPromises);
+      await Promise.allSettled(streamingPromises);
       allRoundsResponses.push(roundResponses);
-      sendSse(res, 'round_end', { round });
+      if (!res.writableEnded) {
+        sendSse(res, 'round_end', { round });
+      }
       console.log(`[ROUND ${round}] Finished.`);
     }
 
     // Moderator Logic (after all rounds and streams are complete)
     if (enabledAIs.moderator) {
       console.log('[MODERATOR] Generating response...');
-      sendSse(res, 'moderator_start', {});
+      if (!res.writableEnded) {
+        sendSse(res, 'moderator_start', {});
+      }
       let moderatorText = '';
       try {
         const finalResponses = allRoundsResponses[allRoundsResponses.length - 1];
@@ -954,4 +966,10 @@ app.listen(PORT, () => {
     anthropic: !!process.env.ANTHROPIC_API_KEY,
     google: !!process.env.GOOGLE_AI_API_KEY,
   });
+  console.log(' Models configured:', {
+    openai: OPENAI_CHAT_MODEL,
+    anthropic: CLAUDE_MODEL,
+    gemini: GEMINI_MODEL,
+  });
+  console.log(' Server is ready for connections.');
 });
