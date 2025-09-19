@@ -96,7 +96,7 @@ function langLabel(code) {
 }
 
 // OpenAI chat via REST (avoids SDK surface differences)
-async function openaiChat(messages, { model = OPENAI_CHAT_MODEL, max_tokens = 400, temperature = 0.7 } = {}) {
+async function openaiChat(messages, { model = OPENAI_CHAT_MODEL, max_tokens = 400, temperature = 0.7, stream = false } = {}) {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY not set');
   }
@@ -106,13 +106,25 @@ async function openaiChat(messages, { model = OPENAI_CHAT_MODEL, max_tokens = 40
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ model, messages, max_tokens, temperature }),
+    body: JSON.stringify({ model, messages, max_tokens, temperature, stream }),
   });
-  const json = await resp.json();
+  
   if (!resp.ok) {
-    throw new Error(json?.error?.message || `OpenAI HTTP ${resp.status}`);
+    const errorData = await resp.json().catch(() => ({}));
+    throw new Error(errorData?.error?.message || `OpenAI HTTP ${resp.status}`);
   }
-  return json;
+
+  if (stream) {
+    return resp.body;
+  }
+  
+  return resp.json();
+}
+
+// ====== STREAMING UTILS ======
+function sendSse(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
 // ====== ENDPOINTS ======
@@ -141,6 +153,206 @@ app.get('/health', (req, res) => {
 });
 
 app.post('/api/chat', async (req, res) => {
+  const {
+    question,
+    language,
+    conversation = [],
+    moderatorStyle = 'neutral',
+    roundCount = 1,
+    enabledAIs: clientEnabledAIs = {},
+    // iOS app compatibility
+    includeGPT = true,
+    includeClaude = true,
+    includeGemini = true,
+    includeModerator = true,
+    moderatorSource = 'gpt',
+  } = req.body;
+
+  // Combine enabledAIs from new clients and fallback to include-params for older clients
+  const enabledAIs = {
+    gpt: clientEnabledAIs.gpt ?? includeGPT,
+    claude: clientEnabledAIs.claude ?? includeClaude,
+    gemini: clientEnabledAIs.gemini ?? includeGemini,
+    moderator: clientEnabledAIs.moderator ?? includeModerator,
+  };
+
+  if (!question || typeof question !== 'string') {
+    return res.status(400).json({ error: 'Question is required', success: false });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const cleanup = () => {
+    if (!res.writableEnded) {
+      res.end();
+    }
+    console.log('[STREAM] Connection closed.');
+  };
+  req.on('close', cleanup);
+
+  try {
+    const detectedLang = language || detectLanguage(question);
+    const languageInstruction = langLabel(detectedLang);
+    const userOnlyHistory = (Array.isArray(conversation) ? conversation : [])
+      .map(msg => ({ role: msg?.sender === 'user' ? 'user' : 'assistant', content: msg?.text || '' }))
+      .filter(m => !!m.content && m.role === 'user');
+
+    const maxRounds = Math.max(1, Math.min(roundCount || 1, 3));
+    let allRoundsResponses = [];
+
+    sendSse(res, 'info', { message: 'Processing request...', settings: { maxRounds, enabledAIs } });
+
+    for (let round = 1; round <= maxRounds; round++) {
+      sendSse(res, 'round_start', { round, maxRounds });
+      console.log(`[ROUND ${round}] Starting...`);
+
+      let previousRoundsContext = allRoundsResponses.map((prevRound, index) => 
+        `--- Round ${index + 1} Results ---\n` +
+        Object.entries(prevRound).map(([ai, text]) => `${ai.toUpperCase()}: ${text}`).join('\n')
+      ).join('\n\n');
+
+      const streamingPromises = [];
+      const roundResponses = {};
+
+      // GPT Stream
+      if (enabledAIs.gpt) {
+        streamingPromises.push((async () => {
+          let fullResponse = '';
+          try {
+            const messages = [
+              { role: 'system', content: `You are ChatGPT. Respond in ${languageInstruction}. Keep answers concise.` },
+              ...userOnlyHistory.slice(-3),
+              { role: 'user', content: `Question: "${question}"\n\n${previousRoundsContext ? 'Previous rounds:\n' + previousRoundsContext + '\n\nYour turn:' : ''}` },
+            ];
+            const stream = await openaiChat(messages, { max_tokens: 400, stream: true });
+            for await (const chunk of stream) {
+              const content = chunk.choices?.[0]?.delta?.content || '';
+              if (content) {
+                fullResponse += content;
+                sendSse(res, 'chunk', { ai: 'gpt', content });
+              }
+            }
+          } catch (err) {
+            console.error('[STREAM] GPT Error:', err.message);
+            fullResponse = `GPT Error: ${err.message}`;
+            sendSse(res, 'error', { ai: 'gpt', message: err.message });
+          }
+          roundResponses.gpt = fullResponse;
+          sendSse(res, 'stream_end', { ai: 'gpt' });
+        })());
+      }
+
+      // Claude Stream
+      if (enabledAIs.claude) {
+        streamingPromises.push((async () => {
+          let fullResponse = '';
+          try {
+            const stream = await anthropic.messages.create({
+              model: CLAUDE_MODEL,
+              max_tokens: 400,
+              system: `You are Claude. Respond in ${languageInstruction}. Keep answers concise.`,
+              messages: [
+                ...userOnlyHistory.slice(-3),
+                { role: 'user', content: `Question: "${question}"\n\n${previousRoundsContext ? 'Previous rounds:\n' + previousRoundsContext + '\n\nYour turn:' : ''}` },
+              ],
+              stream: true,
+            });
+            for await (const event of stream) {
+              if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+                const content = event.delta.text;
+                fullResponse += content;
+                sendSse(res, 'chunk', { ai: 'claude', content });
+              }
+            }
+          } catch (err) {
+            console.error('[STREAM] Claude Error:', err.message);
+            fullResponse = `Claude Error: ${err.message}`;
+            sendSse(res, 'error', { ai: 'claude', message: err.message });
+          }
+          roundResponses.claude = fullResponse;
+          sendSse(res, 'stream_end', { ai: 'claude' });
+        })());
+      }
+
+      // Gemini Stream
+      if (enabledAIs.gemini && genAI) {
+        streamingPromises.push((async () => {
+          let fullResponse = '';
+          try {
+            const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+            const chat = model.startChat({
+              history: userOnlyHistory.slice(-3).map(m => ({ role: 'user', parts: [{ text: m.content }] })),
+            });
+            const result = await chat.sendMessageStream(`Question: "${question}"\n\n${previousRoundsContext ? 'Previous rounds:\n' + previousRoundsContext + '\n\nYour turn:' : ''} Respond in ${languageInstruction}.`);
+            for await (const chunk of result.stream) {
+              const content = chunk.text();
+              fullResponse += content;
+              sendSse(res, 'chunk', { ai: 'gemini', content });
+            }
+          } catch (err) {
+            console.error('[STREAM] Gemini Error:', err.message);
+            fullResponse = `Gemini Error: ${err.message}`;
+            sendSse(res, 'error', { ai: 'gemini', message: err.message });
+          }
+          roundResponses.gemini = fullResponse;
+          sendSse(res, 'stream_end', { ai: 'gemini' });
+        })());
+      }
+
+      await Promise.all(streamingPromises);
+      allRoundsResponses.push(roundResponses);
+      sendSse(res, 'round_end', { round });
+      console.log(`[ROUND ${round}] Finished.`);
+    }
+
+    // Moderator Logic (after all rounds and streams are complete)
+    if (enabledAIs.moderator) {
+      console.log('[MODERATOR] Generating response...');
+      sendSse(res, 'moderator_start', {});
+      let moderatorText = '';
+      try {
+        const finalResponses = allRoundsResponses[allRoundsResponses.length - 1];
+        let moderatorContext = `User asked: "${question}"\n\n--- Final AI Responses ---\n`;
+        if (finalResponses.gpt) moderatorContext += `GPT: ${finalResponses.gpt}\n`;
+        if (finalResponses.claude) moderatorContext += `Claude: ${finalResponses.claude}\n`;
+        if (finalResponses.gemini) moderatorContext += `Gemini: ${finalResponses.gemini}\n`;
+        
+        const moderatorPrompts = {
+            neutral: `Summarize key points briefly in ${languageInstruction}.`,
+            analytical: `Compare AI perspectives briefly in ${languageInstruction}.`,
+            educational: `Explain briefly in ${languageInstruction}.`,
+            creative: `Present information creatively but briefly in ${languageInstruction}.`,
+            'quick-summary': `Very brief summary in ${languageInstruction}. 1-2 sentences max.`,
+        };
+        const moderatorPrompt = moderatorPrompts[moderatorStyle] || moderatorPrompts.neutral;
+
+        // Using non-streaming for moderator as it's a final summary
+        const modMessages = [{ role: 'system', content: moderatorPrompt }, { role: 'user', content: moderatorContext }];
+        const modJson = await openaiChat(modMessages, { max_tokens: 200 });
+        moderatorText = modJson.choices?.[0]?.message?.content || 'Moderator response error';
+
+      } catch (err) {
+        console.error('[MODERATOR] Error:', err.message);
+        moderatorText = `Moderator Error: ${err.message}`;
+      }
+      sendSse(res, 'moderator_chunk', { content: moderatorText });
+      sendSse(res, 'moderator_end', {});
+      console.log('[MODERATOR] Response sent.');
+    }
+
+  } catch (error) {
+    console.error('[STREAM] Top-level error:', error);
+    sendSse(res, 'error', { error: 'A critical error occurred.', details: error.message });
+  } finally {
+    sendSse(res, 'done', { message: 'Stream complete.' });
+    cleanup();
+  }
+});
+
+app.post('/api/chat_non_streaming', async (req, res) => {
   try {
     const {
       question,
