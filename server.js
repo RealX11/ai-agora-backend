@@ -19,6 +19,12 @@ process.on('SIGTERM', () => {
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[ERROR] Unhandled Rejection:', reason);
+  // Don't exit the process, just log the error
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('[ERROR] Uncaught Exception:', error);
+  // Don't exit the process, just log the error
 });
 
 const express = require('express');
@@ -61,10 +67,10 @@ try {
 // ====== MODEL CHOICES (auto "latest") ======
 // OpenAI: latest stable GPT-4 model
 const OPENAI_CHAT_MODEL = 'gpt-4o';
-// Anthropic: latest Claude Sonnet 4 model (from API response)
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+// Anthropic: latest Claude model
+const CLAUDE_MODEL = 'claude-3-5-sonnet-20241022';
 // Google: latest stable Gemini 2.5 Pro model
-const GEMINI_MODEL = "gemini-2.5-pro";
+const GEMINI_MODEL = "gemini-2.0-flash-exp";
 
 // ====== MIDDLEWARE ======
 app.use(cors());
@@ -123,8 +129,14 @@ async function openaiChat(messages, { model = OPENAI_CHAT_MODEL, max_tokens = 40
 
 // ====== STREAMING UTILS ======
 function sendSse(res, event, data) {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+  try {
+    if (!res.writableEnded) {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
+  } catch (error) {
+    console.error('[SSE] Error sending SSE:', error.message);
+  }
 }
 
 // ====== ENDPOINTS ======
@@ -187,12 +199,17 @@ app.post('/api/chat', async (req, res) => {
   res.flushHeaders();
 
   const cleanup = () => {
-    if (!res.writableEnded) {
-      res.end();
+    try {
+      if (!res.writableEnded) {
+        res.end();
+      }
+      console.log('[STREAM] Connection closed.');
+    } catch (error) {
+      console.error('[CLEANUP] Error during cleanup:', error.message);
     }
-    console.log('[STREAM] Connection closed.');
   };
   req.on('close', cleanup);
+  req.on('error', cleanup);
 
   try {
     const detectedLang = language || detectLanguage(question);
@@ -266,13 +283,15 @@ app.post('/api/chat', async (req, res) => {
                   if (data === '[DONE]') {
                     break;
                   }
-                  if (data) {
+                  if (data && data !== '') {
                     try {
                       const json = JSON.parse(data);
                       const content = json.choices?.[0]?.delta?.content;
                       if (content) {
                         fullResponse += content;
-                        sendSse(res, 'chunk', { ai: 'gpt', content });
+                        if (!res.writableEnded) {
+                          sendSse(res, 'chunk', { ai: 'gpt', content });
+                        }
                       }
                     } catch (e) {
                       // Skip malformed JSON chunks
@@ -289,7 +308,9 @@ app.post('/api/chat', async (req, res) => {
             sendSse(res, 'error', { ai: 'gpt', message: err.message });
           }
           roundResponses.gpt = fullResponse;
-          sendSse(res, 'stream_end', { ai: 'gpt' });
+          if (!res.writableEnded) {
+            sendSse(res, 'stream_end', { ai: 'gpt' });
+          }
         })());
       }
 
@@ -312,7 +333,9 @@ app.post('/api/chat', async (req, res) => {
               if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
                 const content = event.delta.text;
                 fullResponse += content;
-                sendSse(res, 'chunk', { ai: 'claude', content });
+                if (!res.writableEnded) {
+                  sendSse(res, 'chunk', { ai: 'claude', content });
+                }
               }
             }
           } catch (err) {
@@ -321,7 +344,9 @@ app.post('/api/chat', async (req, res) => {
             sendSse(res, 'error', { ai: 'claude', message: err.message });
           }
           roundResponses.claude = fullResponse;
-          sendSse(res, 'stream_end', { ai: 'claude' });
+          if (!res.writableEnded) {
+            sendSse(res, 'stream_end', { ai: 'claude' });
+          }
         })());
       }
 
@@ -339,7 +364,9 @@ app.post('/api/chat', async (req, res) => {
               const content = chunk.text();
               if (content) {
                 fullResponse += content;
-                sendSse(res, 'chunk', { ai: 'gemini', content });
+                if (!res.writableEnded) {
+                  sendSse(res, 'chunk', { ai: 'gemini', content });
+                }
               }
             }
           } catch (err) {
@@ -348,7 +375,9 @@ app.post('/api/chat', async (req, res) => {
             sendSse(res, 'error', { ai: 'gemini', message: err.message });
           }
           roundResponses.gemini = fullResponse;
-          sendSse(res, 'stream_end', { ai: 'gemini' });
+          if (!res.writableEnded) {
+            sendSse(res, 'stream_end', { ai: 'gemini' });
+          }
         })());
       }
 
@@ -427,7 +456,9 @@ app.post('/api/chat', async (req, res) => {
                     const content = json.choices?.[0]?.delta?.content;
                     if (content) {
                       moderatorText += content;
-                      sendSse(res, 'moderator_chunk', { content });
+                      if (!res.writableEnded) {
+                        sendSse(res, 'moderator_chunk', { content });
+                      }
                     }
                   } catch (e) {
                     continue;
@@ -443,17 +474,33 @@ app.post('/api/chat', async (req, res) => {
       } catch (err) {
         console.error('[MODERATOR] Error:', err.message);
         moderatorText = `Moderator Error: ${err.message}`;
-        sendSse(res, 'moderator_chunk', { content: moderatorText });
+        if (!res.writableEnded) {
+          sendSse(res, 'moderator_chunk', { content: moderatorText });
+        }
       }
-      sendSse(res, 'moderator_end', {});
+      if (!res.writableEnded) {
+        sendSse(res, 'moderator_end', {});
+      }
       console.log('[MODERATOR] Response sent.');
     }
 
   } catch (error) {
     console.error('[STREAM] Top-level error:', error);
-    sendSse(res, 'error', { error: 'A critical error occurred.', details: error.message });
+    if (!res.writableEnded) {
+      try {
+        sendSse(res, 'error', { error: 'A critical error occurred.', details: error.message });
+      } catch (e) {
+        console.error('[STREAM] Failed to send error SSE:', e.message);
+      }
+    }
   } finally {
-    sendSse(res, 'done', { message: 'Stream complete.' });
+    if (!res.writableEnded) {
+      try {
+        sendSse(res, 'done', { message: 'Stream complete.' });
+      } catch (e) {
+        console.error('[STREAM] Failed to send done SSE:', e.message);
+      }
+    }
     cleanup();
   }
 });
