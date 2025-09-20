@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs').promises;
@@ -92,72 +93,7 @@ async function callOpenAI(messages, stream = false) {
   }
 }
 
-async function callClaude(messages, stream = false) {
-  try {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new Error('ANTHROPIC_API_KEY not set');
-    }
-    
-    console.log('Claude API call started with model:', CLAUDE_MODEL);
-    console.log('Original messages:', JSON.stringify(messages, null, 2));
-    
-    const systemMessage = messages.find(m => m.role === 'system');
-    const userMessages = messages.filter(m => m.role !== 'system');
-    
-    // Format messages for Claude API - content must be array format
-    const formattedMessages = userMessages.map(msg => ({
-      role: msg.role,
-      content: [{ 
-        type: 'text', 
-        text: typeof msg.content === 'string' ? msg.content : msg.content?.text || String(msg.content)
-      }]
-    }));
-    
-    console.log('Formatted messages for Claude:', JSON.stringify(formattedMessages, null, 2));
-    
-    const requestBody = {
-      model: CLAUDE_MODEL,
-      max_tokens: 2000,
-      messages: formattedMessages,
-      temperature: 0.7,
-      stream: stream
-    };
-    
-    if (systemMessage?.content) {
-      requestBody.system = systemMessage.content;
-    }
-    
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify(requestBody)
-    });
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData?.error?.message || `Claude HTTP ${response.status}`);
-    }
-    
-    if (stream) {
-      return response.body;
-    }
-    
-    const data = await response.json();
-    console.log('Claude API call successful');
-    return data;
-    
-  } catch (error) {
-    console.error('Claude API Error Details:', {
-      message: error.message,
-      model: CLAUDE_MODEL
-    });
-    throw new Error(`Claude Error: ${error.message}`);
-  }
-}
+// Remove the custom callClaude function completely since we'll use direct SDK calls
 
 async function callGemini(messages, stream = false) {
   try {
