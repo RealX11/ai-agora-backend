@@ -1,618 +1,408 @@
-// server.js — AI Agora Backend (modernized, auto-latest models)
-
-// Memory monitoring ve crash prevention
-setInterval(() => {
-  const memUsage = process.memoryUsage();
-  console.log(`[MEMORY] Heap: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`);
-  
-  // 400MB'dan fazla kullanılırsa warning
-  if (memUsage.heapUsed > 400 * 1024 * 1024) {
-    console.warn('[WARNING] High memory usage detected');
-  }
-}, 10000); // Her 10 saniyede kontrol
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('[SHUTDOWN] SIGTERM received, shutting down gracefully');
-  process.exit(0);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[ERROR] Unhandled Rejection:', reason);
-});
-
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs').promises;
+const path = require('path');
+require('dotenv').config();
+
+// AI SDK imports
+const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-require('dotenv').config();
+
+// Model constants - DO NOT CHANGE
+export const OPENAI_CHAT_MODEL = 'gpt-4o';
+export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+export const GEMINI_MODEL = 'gemini-2.5-pro';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ====== ENV CHECKS ======
-if (!process.env.OPENAI_API_KEY) {
-  console.warn('[WARN] OPENAI_API_KEY is missing in environment variables.');
-}
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.warn('[WARN] ANTHROPIC_API_KEY is missing in environment variables.');
-}
-if (!process.env.GOOGLE_AI_API_KEY) {
-  console.warn('[WARN] GOOGLE_AI_API_KEY is missing in environment variables.');
-}
-
-// ====== CLIENTS ======
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-// Google AI client with improved error handling
-let genAI;
-try {
-  const googleApiKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
-  if (googleApiKey) {
-    genAI = new GoogleGenerativeAI(googleApiKey);
-    console.log('[INIT] Google AI client initialized successfully');
-  } else {
-    console.warn('[INIT] Google AI API key not found - Gemini will be unavailable');
-  }
-} catch (error) {
-  console.error('[INIT] Failed to initialize Google AI client:', error.message);
-}
-
-// ====== MODEL CHOICES (auto "latest") ======
-// OpenAI: latest stable GPT-4 model
-const OPENAI_CHAT_MODEL = 'gpt-4o';
-// Anthropic: latest Claude Sonnet 4 model (from API response)
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-// Google: latest stable Gemini 2.5 Pro model
-const GEMINI_MODEL = "gemini-2.5-pro";
-
-// ====== MIDDLEWARE ======
+// Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-// ====== UTILS ======
-function detectLanguage(text) {
-  const tr = ['ve', 'bir', 'bu', 'da', 'de', 'ile', 'için', 'var', 'olan', 'çok', 'daha', 'en', 'şey', 'gibi', 'sonra'];
-  const en = ['the', 'and', 'is', 'a', 'to', 'in', 'it', 'you', 'that', 'he', 'was', 'for', 'on', 'are', 'as', 'with'];
-  const es = ['el', 'la', 'de', 'que', 'y', 'a', 'en', 'un', 'es', 'se', 'no', 'te', 'lo', 'le', 'da'];
-  const fr = ['le', 'de', 'et', 'à', 'un', 'il', 'être', 'en', 'avoir', 'que', 'pour', 'dans', 'ce', 'son'];
-  const de = ['der', 'die', 'und', 'in', 'den', 'von', 'zu', 'das', 'mit', 'sich', 'des', 'auf', 'für', 'ist', 'im'];
-  const ar = ['في', 'من', 'إلى', 'على', 'أن', 'هذا', 'هذه', 'كان', 'التي', 'الذي', 'ما', 'لا', 'أو', 'كل'];
-
-  const t = (text || '').toLowerCase();
-  const scores = {
-    tr: tr.filter(w => t.includes(w)).length,
-    en: en.filter(w => t.includes(w)).length,
-    es: es.filter(w => t.includes(w)).length,
-    fr: fr.filter(w => t.includes(w)).length,
-    de: de.filter(w => t.includes(w)).length,
-    ar: ar.filter(w => text.includes(w)).length, // keep rtl raw
-  };
-  return Object.keys(scores).reduce((a, b) => (scores[a] > scores[b] ? a : b));
-}
-
-function langLabel(code) {
-  return ({ tr: 'Türkçe', en: 'English', es: 'Spanish', fr: 'French', de: 'German', ar: 'Arabic' }[code] || 'English');
-}
-
-// OpenAI chat via REST (avoids SDK surface differences)
-async function openaiChat(messages, { model = OPENAI_CHAT_MODEL, max_tokens = 400, temperature = 0.7 } = {}) {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error('OPENAI_API_KEY not set');
+// Environment checks
+const requiredEnvVars = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_AI_API_KEY'];
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    console.warn(`⚠️  Missing environment variable: ${envVar}`);
   }
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ model, messages, max_tokens, temperature }),
-  });
-  const json = await resp.json();
-  if (!resp.ok) {
-    throw new Error(json?.error?.message || `OpenAI HTTP ${resp.status}`);
-  }
-  return json;
 }
 
-// ====== ENDPOINTS ======
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    message: 'AI Agora Backend is running',
-    timestamp: new Date().toISOString(),
-    apis: {
-      openai: !!process.env.OPENAI_API_KEY,
-      anthropic: !!process.env.ANTHROPIC_API_KEY,
-      google: !!process.env.GOOGLE_AI_API_KEY,
-    },
-    models: {
-      openai: OPENAI_CHAT_MODEL,
-      anthropic: CLAUDE_MODEL,
-      gemini: GEMINI_MODEL,
-    },
-    features: {
-      structuredOutput: true,
-      languageDetection: true,
-      parallelProcessing: true,
-      moderatorStyles: ['neutral', 'analytical', 'educational', 'creative', 'quick-summary'],
-    },
-  });
+// Initialize AI clients
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-app.post('/api/chat', async (req, res) => {
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+const genai = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+
+// Utility functions
+function generateRequestId() {
+  return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+function detectLanguage(text) {
+  // Simple language detection based on common patterns
+  if (/[çğıöşüÇĞIİÖŞÜ]/.test(text)) return 'tr';
+  if (/[áéíóúüñ¿¡]/i.test(text)) return 'es';
+  if (/[àâäéèêëîïôöùûüÿç]/i.test(text)) return 'fr';
+  if (/[äöüßÄÖÜ]/.test(text)) return 'de';
+  return 'en'; // default to English
+}
+
+function getModeratorPrompt(style, language, modelResponses, originalQuestion) {
+  const langPrompts = {
+    en: {
+      neutral: `Analyze the following AI responses to the question: "${originalQuestion}"\n\nResponses:\n${modelResponses}\n\nProvide a balanced, concise summary that highlights key points and resolves any contradictions.`,
+      analytical: `Compare and analyze the following AI responses to: "${originalQuestion}"\n\nResponses:\n${modelResponses}\n\nProvide a detailed analysis explaining what each model said, why they differ, and identify the most accurate insights.`,
+      educational: `Review these AI responses to: "${originalQuestion}"\n\nResponses:\n${modelResponses}\n\nCreate an educational explanation with step-by-step reasoning and clear learning points.`,
+      creative: `Transform these AI responses to: "${originalQuestion}"\n\nResponses:\n${modelResponses}\n\nCreate an engaging, narrative synthesis that creatively presents the key insights.`,
+      'quick-summary': `Summarize these AI responses to: "${originalQuestion}"\n\nResponses:\n${modelResponses}\n\nProvide a 1-2 sentence summary of the most important takeaway.`
+    },
+    tr: {
+      neutral: `Şu soruya verilen AI yanıtlarını analiz et: "${originalQuestion}"\n\nYanıtlar:\n${modelResponses}\n\nAna noktaları öne çıkaran ve çelişkileri çözen dengeli, öz bir özet sun.`,
+      analytical: `Şu soruya verilen AI yanıtlarını karşılaştır: "${originalQuestion}"\n\nYanıtlar:\n${modelResponses}\n\nHer modelin ne dediğini, neden farklılaştıklarını açıklayan ve en doğru görüşleri belirten detaylı analiz yap.`,
+      educational: `Şu soruya verilen AI yanıtlarını incele: "${originalQuestion}"\n\nYanıtlar:\n${modelResponses}\n\nAdım adım mantık yürütme ve açık öğrenim noktalarıyla eğitici açıklama oluştur.`,
+      creative: `Şu soruya verilen AI yanıtlarını dönüştür: "${originalQuestion}"\n\nYanıtlar:\n${modelResponses}\n\nAna görüşleri yaratıcı şekilde sunan ilgi çekici, anlatımsal bir sentez oluştur.`,
+      'quick-summary': `Şu soruya verilen AI yanıtlarını özetle: "${originalQuestion}"\n\nYanıtlar:\n${modelResponses}\n\nEn önemli çıkarımın 1-2 cümlelik özetini ver.`
+    }
+  };
+
+  return langPrompts[language] || langPrompts.en;
+}
+
+// AI Model functions
+async function callOpenAI(messages, stream = false) {
   try {
-    const {
-      question,
-      language,
-      conversation = [],
+    const response = await openai.chat.completions.create({
+      model: OPENAI_CHAT_MODEL,
+      messages: messages,
+      stream: stream,
+      temperature: 0.7,
+      max_tokens: 2000
+    });
+    return response;
+  } catch (error) {
+    console.error('OpenAI API Error:', error);
+    throw new Error(`OpenAI Error: ${error.message}`);
+  }
+}
+
+async function callClaude(messages, stream = false) {
+  try {
+    const systemMessage = messages.find(m => m.role === 'system');
+    const userMessages = messages.filter(m => m.role !== 'system');
+    
+    const response = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 2000,
+      system: systemMessage?.content || '',
+      messages: userMessages,
+      stream: stream,
+      temperature: 0.7
+    });
+    return response;
+  } catch (error) {
+    console.error('Claude API Error:', error);
+    throw new Error(`Claude Error: ${error.message}`);
+  }
+}
+
+async function callGemini(messages, stream = false) {
+  try {
+    const model = genai.getGenerativeModel({ model: GEMINI_MODEL });
+    
+    // Convert messages to Gemini format
+    const conversation = messages
+      .filter(m => m.role !== 'system')
+      .map(m => m.content)
+      .join('\n\n');
+    
+    const systemMessage = messages.find(m => m.role === 'system')?.content;
+    const fullPrompt = systemMessage ? `${systemMessage}\n\n${conversation}` : conversation;
+    
+    if (stream) {
+      return await model.generateContentStream(fullPrompt);
+    } else {
+      return await model.generateContent(fullPrompt);
+    }
+  } catch (error) {
+    console.error('Gemini API Error:', error);
+    throw new Error(`Gemini Error: ${error.message}`);
+  }
+}
+
+// SSE streaming function for models
+async function streamModelResponse(res, modelName, modelFunction, messages) {
+  try {
+    const stream = await modelFunction(messages, true);
+    
+    if (modelName === 'gpt') {
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content || '';
+        if (content) {
+          res.write(`event: model_chunk\ndata: ${JSON.stringify({ model: modelName, textChunk: content })}\n\n`);
+        }
+      }
+    } else if (modelName === 'claude') {
+      for await (const chunk of stream) {
+        if (chunk.type === 'content_block_delta' && chunk.delta.text) {
+          res.write(`event: model_chunk\ndata: ${JSON.stringify({ model: modelName, textChunk: chunk.delta.text })}\n\n`);
+        }
+      }
+    } else if (modelName === 'gemini') {
+      for await (const chunk of stream.stream) {
+        const text = chunk.text();
+        if (text) {
+          res.write(`event: model_chunk\ndata: ${JSON.stringify({ model: modelName, textChunk: text })}\n\n`);
+        }
+      }
+    }
+    
+    res.write(`event: model_done\ndata: ${JSON.stringify({ model: modelName })}\n\n`);
+  } catch (error) {
+    console.error(`${modelName} streaming error:`, error);
+    res.write(`event: error\ndata: ${JSON.stringify({ model: modelName, message: `${modelName.toUpperCase()} model is currently unavailable` })}\n\n`);
+  }
+}
+
+// Main chat endpoint
+app.post('/api/chat', async (req, res) => {
+  const requestId = generateRequestId();
+  const startTime = Date.now();
+  
+  console.log(`[${requestId}] New chat request started`);
+  
+  try {
+    // Validate request body
+    const { 
+      question, 
+      activeModels = ['gpt', 'claude', 'gemini'], 
+      rounds = 1, 
+      moderatorEngine = 'moderator',
       moderatorStyle = 'neutral',
-      structuredOutput = false,
-      roundCount = 1,
-      // iOS app compatibility parameters
-      includeGPT = true,
-      includeClaude = true, 
-      includeGemini = true,
-      includeModerator = true,
-      moderatorSource = 'gpt',
-      // New AI selection parameters (fallback to iOS params)
-      enabledAIs = { 
-        gpt: includeGPT === true, 
-        claude: includeClaude === true, 
-        gemini: includeGemini === true, 
-        moderator: includeModerator === true 
-      },
-      // (iOS artık model göndermiyor; backend auto-select yapıyor)
+      language 
     } = req.body;
-
-    if (!question || typeof question !== 'string') {
-      return res.status(400).json({ error: 'Question is required', success: false });
+    
+    if (!question || !Array.isArray(activeModels) || activeModels.length === 0) {
+      return res.status(400).json({ error: 'Invalid request: question and activeModels are required' });
     }
-
+    
+    // Set SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
+    
+    // Detect language
     const detectedLang = language || detectLanguage(question);
-    const languageInstruction = langLabel(detectedLang);
-
-    // iOS ModeratorStyle compatibility mapping
-    const moderatorStyleMapping = {
-      'Quick Summary': 'quick-summary',
-      'Best Answer': 'neutral', 
-      'Action Steps': 'educational',
-      'Detailed Analysis': 'analytical'
+    
+    // Send session start
+    res.write(`event: session_start\ndata: ${JSON.stringify({ 
+      sessionId: requestId, 
+      language: detectedLang,
+      activeModels,
+      rounds 
+    })}\n\n`);
+    
+    // Model mapping
+    const modelFunctions = {
+      gpt: callOpenAI,
+      claude: callClaude,
+      gemini: callGemini
     };
     
-    const finalModeratorStyle = moderatorStyleMapping[moderatorStyle] || moderatorStyle || 'neutral';
-    console.log('[MODERATOR STYLE] iOS sent:', moderatorStyle, '→ Backend using:', finalModeratorStyle);
-
-    // iOS moderatorSource compatibility (convert ChatMessage.Role to string)
-    const moderatorSourceMapping = {
-      'GPT': 'gpt',
-      'Claude': 'claude', 
-      'Gemini': 'gemini'
-    };
+    let conversationHistory = [];
+    let allModelResponses = {};
     
-    const finalModeratorSource = moderatorSourceMapping[moderatorSource] || moderatorSource || 'gpt';
-    console.log('[MODERATOR SOURCE] iOS sent:', moderatorSource, '→ Backend using:', finalModeratorSource);
-
-    // Normalize conversation history for different providers
-    const conversationHistory = (Array.isArray(conversation) ? conversation : [])
-      .map(msg => ({
-        role: msg?.sender === 'user' ? 'user' : 'assistant',
-        content: msg?.text || '',
-      }))
-      .filter(m => !!m.content);
-
-    console.log('[DEBUG] Original conversation history:', conversationHistory.length, 'messages');
-    
-    // IMPORTANT: Each AI should see only USER messages in history, not other AI responses
-    // This prevents AIs from responding to each other instead of the user
-    const userOnlyHistory = conversationHistory.filter(msg => msg.role === 'user');
-    console.log('[DEBUG] User-only history for AIs:', userOnlyHistory.length, 'messages');
-
-    // Validate round count
-    const maxRounds = Math.max(1, Math.min(roundCount || 1, 3)); // Limit to 1-3 rounds
-    console.log('[ROUNDS] Processing', maxRounds, 'rounds of AI conversation');
-    
-    console.log('[DEBUG] Incoming iOS params:', { includeGPT, includeClaude, includeGemini, includeModerator });
-    console.log('[DEBUG] Resolved enabledAIs:', enabledAIs);
-    
-    // Validate enabled AIs
-    const activeAIs = {
-      gpt: enabledAIs?.gpt === true,
-      claude: enabledAIs?.claude === true,
-      gemini: enabledAIs?.gemini === true,
-      moderator: enabledAIs?.moderator === true
-    };
-    
-    console.log('[AI SELECTION] Active AIs:', activeAIs);
-    console.log('[MODERATOR] Source:', finalModeratorSource, 'Style:', finalModeratorStyle);
-
-    // Determine AI execution order based on enabled AIs
-    const aiOrder = [];
-    if (activeAIs.gpt) aiOrder.push('gpt');
-    if (activeAIs.claude) aiOrder.push('claude');
-    if (activeAIs.gemini) aiOrder.push('gemini');
-    
-    if (aiOrder.length === 0) {
-      return res.status(400).json({ 
-        error: 'At least one AI assistant must be enabled', 
-        success: false 
-      });
-    }
-    
-    console.log('[AI ORDER] Execution sequence:', aiOrder);
-
-    // === Sequential AI calls with selective enabled AIs ===
-    const allRoundsResponses = [];
-    
-    for (let round = 1; round <= maxRounds; round++) {
-      console.log(`[ROUND ${round}] Starting round ${round} of ${maxRounds}...`);
+    // Execute rounds
+    for (let round = 1; round <= rounds; round++) {
+      console.log(`[${requestId}] Starting round ${round}`);
+      
+      if (round > 1) {
+        res.write(`event: round_start\ndata: ${JSON.stringify({ round, message: `${round}. Tur başlıyor...` })}\n\n`);
+      }
       
       const roundResponses = {};
+      const streamPromises = [];
       
-      // Build context from previous rounds
-      let previousRoundsContext = '';
-      if (round > 1) {
-        previousRoundsContext = allRoundsResponses.map((prevRound, index) => {
-          let roundSummary = `\n--- Round ${index + 1} Results ---\n`;
-          if (prevRound.gpt) roundSummary += `GPT: ${prevRound.gpt}\n`;
-          if (prevRound.claude) roundSummary += `Claude: ${prevRound.claude}\n`;
-          if (prevRound.gemini) roundSummary += `Gemini: ${prevRound.gemini}\n`;
-          return roundSummary;
-        }).join('\n');
-      }
-
-      // Execute AIs in order based on user selection
-      for (let i = 0; i < aiOrder.length; i++) {
-        const aiName = aiOrder[i];
+      // Prepare messages for this round
+      let messages = [
+        { role: 'system', content: `Please respond in ${detectedLang === 'tr' ? 'Turkish' : 'English'}. Be concise and helpful.` },
+        { role: 'user', content: question }
+      ];
+      
+      // Add previous round context for multi-round mode
+      if (round > 1 && Object.keys(allModelResponses).length > 0) {
+        const previousResponses = Object.entries(allModelResponses)
+          .map(([model, response]) => `${model.toUpperCase()}: ${response}`)
+          .join('\n\n');
         
-        // Build context of current round responses so far
-        let currentRoundContext = '';
-        const completedAIs = aiOrder.slice(0, i);
-        if (completedAIs.length > 0) {
-          currentRoundContext = completedAIs.map(ai => {
-            if (roundResponses[ai]) {
-              return `${ai.toUpperCase()}: ${roundResponses[ai]}`;
-            }
-            return '';
-          }).filter(text => text).join('\n\n');
-        }
-
-        if (aiName === 'gpt' && activeAIs.gpt) {
-          // GPT Implementation
-          try {
-            console.log(`[ROUND ${round}] Step ${i + 1}: GPT responding...`);
-            
-            let gptPrompt = question;
-            if (round > 1 || currentRoundContext) {
-              gptPrompt = `Question: "${question}"`;
-              
-              if (previousRoundsContext) {
-                gptPrompt += `\n\nPrevious: ${previousRoundsContext}`;
-              }
-              
-              if (currentRoundContext) {
-                gptPrompt += `\n\nOther responses: ${currentRoundContext}`;
-              }
-              
-              gptPrompt += `\n\nBrief response please.`;
-            }
-            
-            const messages = [
-              {
-                role: 'system',
-                content: `You are ChatGPT. Respond briefly in ${languageInstruction}. Keep answers short and helpful.`,
-              },
-              ...userOnlyHistory.slice(-3),
-              { role: 'user', content: gptPrompt },
-            ];
-            
-            const gptResponse = await openaiChat(messages, {
-              model: OPENAI_CHAT_MODEL,
-              max_tokens: 150, // Reduced from 400 for faster responses
-              temperature: 0.7,
+        messages.push({
+          role: 'user', 
+          content: `Previous responses from other models:\n${previousResponses}\n\nPlease provide your updated response, highlighting agreements or disagreements briefly.`
+        });
+      }
+      
+      // Stream responses from active models in parallel
+      for (const modelName of activeModels) {
+        if (modelFunctions[modelName]) {
+          const promise = streamModelResponse(res, modelName, modelFunctions[modelName], messages)
+            .then(() => {
+              console.log(`[${requestId}] ${modelName} completed round ${round}`);
+            })
+            .catch(error => {
+              console.error(`[${requestId}] ${modelName} failed round ${round}:`, error);
             });
-            roundResponses.gpt = gptResponse.choices?.[0]?.message?.content || 'GPT response error';
-            console.log(`[ROUND ${round}] GPT response received:`, roundResponses.gpt.substring(0, 100) + '...');
-          } catch (err) {
-            roundResponses.gpt = `GPT Error: ${err.message}`;
-            console.error(`[ROUND ${round}] GPT error:`, err.message);
-          }
-        }
-
-        if (aiName === 'claude' && activeAIs.claude) {
-          // Claude Implementation
-          try {
-            console.log(`[ROUND ${round}] Step ${i + 1}: Claude responding...`);
-            
-            let claudePrompt = `Question: "${question}"`;
-            
-            if (currentRoundContext) {
-              claudePrompt += `\n\nOther responses: ${currentRoundContext}`;
-            }
-
-            if (previousRoundsContext) {
-              claudePrompt += `\n\nPrevious: ${previousRoundsContext}`;
-              claudePrompt += `\n\nBrief response please.`;
-            } else if (currentRoundContext) {
-              claudePrompt += `\n\nProvide a brief response.`;
-            } else {
-              claudePrompt += `\n\nBrief answer please.`;
-            }
-            
-            const msgs = [
-              ...userOnlyHistory.slice(-3).map(m => ({
-                role: 'user',
-                content: m.content,
-              })),
-              { role: 'user', content: claudePrompt },
-            ];
-            
-            const claudeResponse = await anthropic.messages.create({
-              model: CLAUDE_MODEL,
-              max_tokens: 150, // Reduced from 500 for faster responses
-              system: `You are Claude, an AI assistant. Respond concisely in ${languageInstruction}. Keep answers brief but helpful.`,
-              messages: msgs,
-            });
-            roundResponses.claude = claudeResponse?.content?.[0]?.text || 'Claude response error';
-            console.log(`[ROUND ${round}] Claude response received:`, roundResponses.claude.substring(0, 100) + '...');
-          } catch (err) {
-            roundResponses.claude = `Claude Error: ${err.message}`;
-            console.error(`[ROUND ${round}] Claude error:`, err.message);
-          }
-        }
-
-        if (aiName === 'gemini' && activeAIs.gemini) {
-          // Gemini Implementation
-          try {
-            console.log(`[ROUND ${round}] Step ${i + 1}: Gemini responding...`);
-            
-            // Validate API key first
-            const apiKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
-            if (!apiKey) {
-              throw new Error('Google AI API key not found in environment variables');
-            }
-            
-            // Create model with standard configuration
-            const model = genAI.getGenerativeModel({ 
-              model: GEMINI_MODEL,
-              generationConfig: {
-                maxOutputTokens: 150, // Reduced from 500 for faster responses
-                temperature: 0.7,
-                topP: 0.8,
-                topK: 40,
-              },
-            });
-            
-            // Prepare conversation history in Gemini format
-            const history = userOnlyHistory.slice(-3).map(msg => ({
-              role: 'user',
-              parts: [{ text: msg.content }],
-            }));
-            
-            // Start chat session
-            const chat = model.startChat({ history });
-            
-            let geminiPrompt = `You are Gemini. Respond concisely in ${languageInstruction}.
-
-User question: "${question}"`;
-
-            if (currentRoundContext) {
-              geminiPrompt += `\n\nOther AI responses: ${currentRoundContext}`;
-            }
-
-            if (previousRoundsContext) {
-              geminiPrompt += `\n\nPrevious discussion: ${previousRoundsContext}`;
-              geminiPrompt += `\n\nProvide a brief response considering the previous discussion.`;
-            } else {
-              geminiPrompt += `\n\nProvide a brief, helpful response.`;
-            }
-
-            geminiPrompt += `\n\nKeep response brief and informative.`;
-            
-            const result = await chat.sendMessage(geminiPrompt);
-            const response = await result.response;
-            const text = response.text();
-            
-            roundResponses.gemini = text || 'Gemini response error';
-            console.log(`[ROUND ${round}] Gemini response received:`, roundResponses.gemini.substring(0, 100) + '...');
-            
-          } catch (error) {
-            console.error(`[ROUND ${round}] Gemini error:`, error.message);
-            if (error.message.includes('API key')) {
-              roundResponses.gemini = 'Gemini Error: API key issue';
-            } else if (error.message.includes('quota')) {
-              roundResponses.gemini = 'Gemini Error: API quota exceeded';
-            } else if (error.message.includes('network') || error.message.includes('timeout')) {
-              roundResponses.gemini = 'Gemini Error: Network connectivity issue';
-            } else {
-              roundResponses.gemini = `Gemini Error: ${error.message}`;
-            }
-          }
+          streamPromises.push(promise);
         }
       }
       
-      // Add this round's responses to the collection
-      allRoundsResponses.push(roundResponses);
-      console.log(`[ROUND ${round}] Round ${round} completed successfully`);
+      // Wait for all models to complete
+      await Promise.allSettled(streamPromises);
+      
+      res.write(`event: round_complete\ndata: ${JSON.stringify({ round })}\n\n`);
     }
     
-    // Use the last round's responses as the final responses
-    const finalResponses = allRoundsResponses[allRoundsResponses.length - 1];
-
-    // === Moderator (Dynamic source based on user selection) ===
-    let moderatorText = 'Moderator response unavailable.';
+    // Moderator synthesis (always runs last)
+    console.log(`[${requestId}] Starting moderator synthesis`);
     
-    if (activeAIs.moderator) {
-      const moderatorPrompts = {
-        neutral: `Summarize key points briefly in ${languageInstruction}.`,
-        analytical: `Compare AI perspectives briefly in ${languageInstruction}.`,
-        educational: `Explain briefly in ${languageInstruction}.`,
-        creative: `Present information creatively but briefly in ${languageInstruction}.`,
-        'quick-summary': `Very brief summary in ${languageInstruction}. 1-2 sentences max.`,
-      };
-      const moderatorPrompt = moderatorPrompts[finalModeratorStyle] || moderatorPrompts.neutral;
-
-      try {
-        // Build comprehensive context for moderator
-        let moderatorContext = `User asked: "${question}"\n\n`;
-        
-        if (maxRounds > 1) {
-          moderatorContext += `This discussion involved ${maxRounds} rounds of AI conversation:\n\n`;
-          allRoundsResponses.forEach((round, index) => {
-            moderatorContext += `--- Round ${index + 1} ---\n`;
-            if (round.gpt) moderatorContext += `GPT: ${round.gpt}\n`;
-            if (round.claude) moderatorContext += `Claude: ${round.claude}\n`;
-            if (round.gemini) moderatorContext += `Gemini: ${round.gemini}\n`;
-            moderatorContext += '\n';
-          });
-          moderatorContext += `Please provide a moderator response that synthesizes the evolution of this ${maxRounds}-round discussion.`;
-        } else {
-          moderatorContext += `AI Responses:\n`;
-          if (finalResponses.gpt) moderatorContext += `GPT: ${finalResponses.gpt}\n`;
-          if (finalResponses.claude) moderatorContext += `Claude: ${finalResponses.claude}\n`;
-          if (finalResponses.gemini) moderatorContext += `Gemini: ${finalResponses.gemini}\n`;
-          moderatorContext += '\nPlease provide a moderator response that synthesizes these perspectives.';
-        }
-        
-        // Choose moderator source based on user setting
-        const moderatorTokens = finalModeratorStyle === 'quick-summary' ? 100 : 200; // Much shorter for quick summary
-        
-        if (finalModeratorSource === 'claude' && activeAIs.claude) {
-          // Use Claude as moderator
-          const msgs = [{ role: 'user', content: moderatorContext }];
-          const claudeResponse = await anthropic.messages.create({
-            model: CLAUDE_MODEL,
-            max_tokens: moderatorTokens,
-            system: moderatorPrompt,
-            messages: msgs,
-          });
-          moderatorText = claudeResponse?.content?.[0]?.text || 'Claude moderator response error';
-        } else if (finalModeratorSource === 'gemini' && activeAIs.gemini) {
-          // Use Gemini as moderator
-          const apiKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
-          if (apiKey) {
-            const model = genAI.getGenerativeModel({ 
-              model: GEMINI_MODEL,
-              generationConfig: {
-                maxOutputTokens: moderatorTokens,
-                temperature: 0.8,
-                topP: 0.8,
-                topK: 40,
-              },
-            });
-            
-            const chat = model.startChat({});
-            const prompt = `${moderatorPrompt}\n\n${moderatorContext}`;
-            const result = await chat.sendMessage(prompt);
-            const response = await result.response;
-            moderatorText = response.text() || 'Gemini moderator response error';
-          } else {
-            moderatorText = 'Gemini moderator unavailable: API key not found';
-          }
-        } else {
-          // Use GPT as moderator (default)
-          const modMessages = [
-            { role: 'system', content: moderatorPrompt },
-            { role: 'user', content: moderatorContext },
-          ];
-          
-          const modJson = await openaiChat(modMessages, {
-            model: OPENAI_CHAT_MODEL,
-            max_tokens: moderatorTokens,
-            temperature: 0.8,
-          });
-          moderatorText = modJson.choices?.[0]?.message?.content || 'GPT moderator response error';
-        }
-        
-        console.log('[MODERATOR] Response generated using:', finalModeratorSource, 'with style:', finalModeratorStyle);
-        
-      } catch (err) {
-        console.error('[MODERATOR] Error:', err.message);
-        moderatorText = `Moderator response unavailable: ${err.message}`;
-      }
-    } else {
-      console.log('[MODERATOR] Moderator disabled by user');
-      moderatorText = null; // Don't include moderator if disabled
+    try {
+      const modelResponsesText = Object.entries(allModelResponses)
+        .map(([model, response]) => `**${model.toUpperCase()}**: ${response}`)
+        .join('\n\n');
+      
+      const moderatorPromptObj = getModeratorPrompt(moderatorStyle, detectedLang, modelResponsesText, question);
+      const moderatorMessages = [
+        { role: 'user', content: moderatorPromptObj[moderatorStyle] }
+      ];
+      
+      // Use selected moderator engine
+      let moderatorFunction = modelFunctions[moderatorEngine] || modelFunctions.gpt;
+      await streamModelResponse(res, 'moderator', moderatorFunction, moderatorMessages);
+      
+    } catch (error) {
+      console.error(`[${requestId}] Moderator error:`, error);
+      res.write(`event: error\ndata: ${JSON.stringify({ model: 'moderator', message: 'Moderator synthesis failed' })}\n\n`);
     }
-
-    // Build final response object with only enabled AIs
-    const responseData = {
-      success: true,
-      detectedLanguage: detectedLang,
-      roundCount: maxRounds,
-      activeAIs: Object.keys(activeAIs).filter(ai => activeAIs[ai]),
-      moderatorSource: finalModeratorSource,
-      moderatorStyle: finalModeratorStyle,
-      responses: {},
-      allRounds: maxRounds > 1 ? allRoundsResponses : undefined, // Include all rounds if multiple
-    };
-
-    // Add AI responses only if they were enabled
-    if (activeAIs.gpt) responseData.responses.gpt = finalResponses.gpt;
-    if (activeAIs.claude) responseData.responses.claude = finalResponses.claude;
-    if (activeAIs.gemini) responseData.responses.gemini = finalResponses.gemini;
     
-    // Add moderator response only if enabled and generated
-    if (moderatorText) responseData.responses.moderator = moderatorText;
-
-    console.log(`[RESPONSE] Final response includes: ${Object.keys(responseData.responses).join(', ')}`);
+    // End session
+    const duration = Date.now() - startTime;
+    console.log(`[${requestId}] Chat completed in ${duration}ms`);
     
-    return res.json(responseData);
+    res.write(`event: done\ndata: ${JSON.stringify({ 
+      sessionId: requestId, 
+      duration,
+      roundsCompleted: rounds 
+    })}\n\n`);
+    res.end();
+    
   } catch (error) {
-    console.error('Chat API Error:', error);
-    res.status(500).json({ error: 'Internal server error', details: error.message, success: false });
+    console.error(`[${requestId}] Chat error:`, error);
+    res.write(`event: error\ndata: ${JSON.stringify({ message: error.message })}\n\n`);
+    res.end();
   }
+});
+
+// Health endpoint
+app.get('/health', (req, res) => {
+  const health = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    models: {
+      openai: OPENAI_CHAT_MODEL,
+      claude: CLAUDE_MODEL,
+      gemini: GEMINI_MODEL
+    },
+    env_check: {
+      openai_key: !!process.env.OPENAI_API_KEY,
+      anthropic_key: !!process.env.ANTHROPIC_API_KEY,
+      google_key: !!process.env.GOOGLE_AI_API_KEY
+    }
+  };
+  
+  res.json(health);
+});
+
+// Stats endpoint (optional)
+app.get('/api/stats', (req, res) => {
+  // Simple in-memory stats (in production, you'd use a proper store)
+  res.json({
+    total_requests: 0,
+    avg_response_time: 0,
+    success_rate: '100%',
+    active_models: [OPENAI_CHAT_MODEL, CLAUDE_MODEL, GEMINI_MODEL]
+  });
 });
 
 // Feedback endpoint
 app.post('/api/feedback', async (req, res) => {
   try {
-    const { feedback, deviceId, appVersion, rating, timestamp } = req.body;
-    const feedbackData = {
-      feedback,
-      deviceId,
-      appVersion,
-      rating,
+    const { message, timestamp, clientInfo } = req.body;
+    
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+    
+    const feedback = {
+      id: generateRequestId(),
+      message,
       timestamp: timestamp || new Date().toISOString(),
-      receivedAt: new Date().toISOString(),
+      clientInfo: clientInfo || {},
+      received_at: new Date().toISOString()
     };
-    console.log('Feedback received:', feedbackData);
-    res.json({
-      success: true,
-      message: 'Thank you for your feedback! We appreciate your input.',
-      id: Date.now().toString(),
-    });
+    
+    // Save to JSON file
+    const feedbackFile = path.join(__dirname, 'feedback.json');
+    let existingFeedback = [];
+    
+    try {
+      const data = await fs.readFile(feedbackFile, 'utf8');
+      existingFeedback = JSON.parse(data);
+    } catch (error) {
+      // File doesn't exist yet, start with empty array
+    }
+    
+    existingFeedback.push(feedback);
+    
+    await fs.writeFile(feedbackFile, JSON.stringify(existingFeedback, null, 2));
+    
+    console.log(`Feedback received: ${feedback.id}`);
+    res.json({ success: true, id: feedback.id });
+    
   } catch (error) {
     console.error('Feedback error:', error);
-    res.status(500).json({ error: 'Failed to save feedback', success: false });
+    res.status(500).json({ error: 'Failed to save feedback' });
   }
 });
 
-// Stats endpoint
-app.get('/api/stats', (req, res) => {
-  res.json({
-    status: 'active',
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    timestamp: new Date().toISOString(),
-  });
-});
+// Memory monitoring
+setInterval(() => {
+  const memUsage = process.memoryUsage();
+  const memInMB = memUsage.heapUsed / 1024 / 1024;
+  
+  if (memInMB > 400) {
+    console.warn(`⚠️  High memory usage: ${memInMB.toFixed(2)} MB`);
+  }
+}, 30000);
 
-// 404
-app.use((req, res) => {
-  res.status(404).json({
-    error: 'Endpoint not found',
-    available_endpoints: ['/health', '/api/chat', '/api/feedback', '/api/stats'],
-  });
-});
-
+// Start server
 app.listen(PORT, () => {
-  console.log(` AI Agora Backend running on port ${PORT}`);
-  console.log(` Health: http://localhost:${PORT}/health`);
-  console.log(` Chat:   http://localhost:${PORT}/api/chat`);
-  console.log(' API Keys loaded:', {
-    openai: !!process.env.OPENAI_API_KEY,
-    anthropic: !!process.env.ANTHROPIC_API_KEY,
-    google: !!process.env.GOOGLE_AI_API_KEY,
-  });
+  console.log(`🚀 AI Agora Backend running on port ${PORT}`);
+  console.log(`📊 Health check: http://localhost:${PORT}/health`);
+  console.log(`🤖 Models: ${OPENAI_CHAT_MODEL}, ${CLAUDE_MODEL}, ${GEMINI_MODEL}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  process.exit(0);
 });
