@@ -12,7 +12,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 // Model constants - DO NOT CHANGE
 const OPENAI_CHAT_MODEL = 'gpt-4o';
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-const GEMINI_MODEL = 'gemini-2.5-pro';
+const GEMINI_MODEL = 'gemini-1.5-pro';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -94,6 +94,8 @@ async function callOpenAI(messages, stream = false) {
 
 async function callClaude(messages, stream = false) {
   try {
+    console.log('Claude API call started with model:', CLAUDE_MODEL);
+    
     const systemMessage = messages.find(m => m.role === 'system');
     const userMessages = messages.filter(m => m.role !== 'system');
     
@@ -105,9 +107,16 @@ async function callClaude(messages, stream = false) {
       stream: stream,
       temperature: 0.7
     });
+    
+    console.log('Claude API call successful');
     return response;
   } catch (error) {
-    console.error('Claude API Error:', error);
+    console.error('Claude API Error Details:', {
+      message: error.message,
+      status: error.status,
+      type: error.type,
+      model: CLAUDE_MODEL
+    });
     throw new Error(`Claude Error: ${error.message}`);
   }
 }
