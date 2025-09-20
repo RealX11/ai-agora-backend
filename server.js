@@ -10,9 +10,9 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // Model constants - DO NOT CHANGE
-export const OPENAI_CHAT_MODEL = 'gpt-4o';
-export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-export const GEMINI_MODEL = 'gemini-2.5-pro';
+const OPENAI_CHAT_MODEL = 'gpt-4o';
+const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+const GEMINI_MODEL = 'gemini-2.5-pro';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -250,22 +250,38 @@ app.post('/api/chat', async (req, res) => {
         });
       }
       
-      // Stream responses from active models in parallel
-      for (const modelName of activeModels) {
+      // Collect responses for each round (fixed: actually store responses)
+      const modelPromises = activeModels.map(async (modelName) => {
         if (modelFunctions[modelName]) {
-          const promise = streamModelResponse(res, modelName, modelFunctions[modelName], messages)
-            .then(() => {
-              console.log(`[${requestId}] ${modelName} completed round ${round}`);
-            })
-            .catch(error => {
-              console.error(`[${requestId}] ${modelName} failed round ${round}:`, error);
-            });
-          streamPromises.push(promise);
+          try {
+            // Get non-streaming response first to store
+            const response = await modelFunctions[modelName](messages, false);
+            let responseText = '';
+            
+            if (modelName === 'gpt') {
+              responseText = response.choices[0]?.message?.content || '';
+            } else if (modelName === 'claude') {
+              responseText = response.content[0]?.text || '';
+            } else if (modelName === 'gemini') {
+              responseText = response.response.text() || '';
+            }
+            
+            roundResponses[modelName] = responseText;
+            
+            // Now stream the response
+            await streamModelResponse(res, modelName, modelFunctions[modelName], messages);
+            
+          } catch (error) {
+            console.error(`[${requestId}] ${modelName} failed:`, error);
+          }
         }
-      }
+      });
       
       // Wait for all models to complete
-      await Promise.allSettled(streamPromises);
+      await Promise.allSettled(modelPromises);
+      
+      // Update allModelResponses with this round's responses
+      Object.assign(allModelResponses, roundResponses);
       
       res.write(`event: round_complete\ndata: ${JSON.stringify({ round })}\n\n`);
     }
@@ -280,7 +296,7 @@ app.post('/api/chat', async (req, res) => {
       
       const moderatorPromptObj = getModeratorPrompt(moderatorStyle, detectedLang, modelResponsesText, question);
       const moderatorMessages = [
-        { role: 'user', content: moderatorPromptObj[moderatorStyle] }
+        { role: 'user', content: moderatorPromptObj }
       ];
       
       // Use selected moderator engine
