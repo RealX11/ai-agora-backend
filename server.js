@@ -12,7 +12,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 // Model constants - DO NOT CHANGE
 const OPENAI_CHAT_MODEL = 'gpt-4o';
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-const GEMINI_MODEL = 'gemini-1.5-pro';
+const GEMINI_MODEL = 'gemini-2.5-pro';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -101,7 +101,7 @@ async function callClaude(messages, stream = false) {
     
     const response = await anthropic.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: 2000,
+      max_tokens: 400,
       system: systemMessage?.content || '',
       messages: userMessages,
       stream: stream,
