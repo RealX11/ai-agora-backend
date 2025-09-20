@@ -134,13 +134,13 @@ async function callClaude(messages, language, moderatorStyle) {
     const systemPrompt = generateSystemPrompt(language, moderatorStyle);
     const userMessage = messages.map(msg => msg.content).join('\n');
     
-    const response = await anthropic.messages.create({
+    // Use the correct Anthropic SDK method
+    const response = await anthropic.messages.stream({
       model: CLAUDE_MODEL,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
-      max_tokens: 200, // Reduced for concise responses
-      temperature: 0.7,
-      stream: true
+      max_tokens: 200,
+      temperature: 0.7
     });
 
     return response;
@@ -313,31 +313,42 @@ app.post('/api/chat', async (req, res) => {
       if (activeModels.includes('gpt')) {
         modelPromises.push(
           (async () => {
-            serverStats.modelUsage.gpt++;
-            const stream = await callOpenAI(messages, detectedLanguage, moderatorStyle);
-            let fullResponse = '';
-            
-            for await (const chunk of stream) {
-              const content = chunk.choices[0]?.delta?.content;
-              if (content) {
-                fullResponse += content;
-                sendEvent('message', JSON.stringify({
-                  model: 'gpt',
-                  content: content,
-                  isComplete: false,
-                  round
-                }));
+            try {
+              serverStats.modelUsage.gpt++;
+              const stream = await callOpenAI(messages, detectedLanguage, moderatorStyle);
+              let fullResponse = '';
+              
+              for await (const chunk of stream) {
+                const content = chunk.choices[0]?.delta?.content;
+                if (content) {
+                  fullResponse += content;
+                  sendEvent('message', JSON.stringify({
+                    model: 'gpt',
+                    content: content,
+                    isComplete: false,
+                    round
+                  }));
+                }
               }
+              
+              sendEvent('message', JSON.stringify({
+                model: 'gpt',
+                content: '',
+                isComplete: true,
+                round
+              }));
+              
+              roundResponses.push(`GPT: ${fullResponse}`);
+            } catch (error) {
+              console.error('GPT error:', error);
+              sendEvent('message', JSON.stringify({
+                model: 'gpt',
+                content: 'GPT temporarily unavailable',
+                isComplete: true,
+                round
+              }));
+              roundResponses.push(`GPT: Error - ${error.message}`);
             }
-            
-            sendEvent('message', JSON.stringify({
-              model: 'gpt',
-              content: '',
-              isComplete: true,
-              round
-            }));
-            
-            roundResponses.push(`GPT: ${fullResponse}`);
           })()
         );
       }
@@ -345,31 +356,42 @@ app.post('/api/chat', async (req, res) => {
       if (activeModels.includes('claude')) {
         modelPromises.push(
           (async () => {
-            serverStats.modelUsage.claude++;
-            const stream = await callClaude(messages, detectedLanguage, moderatorStyle);
-            let fullResponse = '';
-            
-            for await (const chunk of stream) {
-              if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
-                const content = chunk.delta.text;
-                fullResponse += content;
-                sendEvent('message', JSON.stringify({
-                  model: 'claude',
-                  content: content,
-                  isComplete: false,
-                  round
-                }));
+            try {
+              serverStats.modelUsage.claude++;
+              const stream = await callClaude(messages, detectedLanguage, moderatorStyle);
+              let fullResponse = '';
+              
+              for await (const chunk of stream) {
+                if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
+                  const content = chunk.delta.text;
+                  fullResponse += content;
+                  sendEvent('message', JSON.stringify({
+                    model: 'claude',
+                    content: content,
+                    isComplete: false,
+                    round
+                  }));
+                }
               }
+              
+              sendEvent('message', JSON.stringify({
+                model: 'claude',
+                content: '',
+                isComplete: true,
+                round
+              }));
+              
+              roundResponses.push(`Claude: ${fullResponse}`);
+            } catch (error) {
+              console.error('Claude error:', error);
+              sendEvent('message', JSON.stringify({
+                model: 'claude',
+                content: 'Claude temporarily unavailable',
+                isComplete: true,
+                round
+              }));
+              roundResponses.push(`Claude: Error - ${error.message}`);
             }
-            
-            sendEvent('message', JSON.stringify({
-              model: 'claude',
-              content: '',
-              isComplete: true,
-              round
-            }));
-            
-            roundResponses.push(`Claude: ${fullResponse}`);
           })()
         );
       }
@@ -377,31 +399,51 @@ app.post('/api/chat', async (req, res) => {
       if (activeModels.includes('gemini')) {
         modelPromises.push(
           (async () => {
-            serverStats.modelUsage.gemini++;
-            const stream = await callGemini(messages, detectedLanguage, moderatorStyle);
-            let fullResponse = '';
-            
-            for await (const chunk of stream.stream) {
-              const content = chunk.text();
-              if (content) {
-                fullResponse += content;
-                sendEvent('message', JSON.stringify({
-                  model: 'gemini',
-                  content: content,
-                  isComplete: false,
-                  round
-                }));
-              }
+            try {
+              serverStats.modelUsage.gemini++;
+              const stream = await callGemini(messages, detectedLanguage, moderatorStyle);
+              let fullResponse = '';
+              
+              // Add timeout for Gemini
+              const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Gemini timeout')), 30000)
+              );
+              
+              const streamPromise = (async () => {
+                for await (const chunk of stream.stream) {
+                  const content = chunk.text();
+                  if (content) {
+                    fullResponse += content;
+                    sendEvent('message', JSON.stringify({
+                      model: 'gemini',
+                      content: content,
+                      isComplete: false,
+                      round
+                    }));
+                  }
+                }
+              })();
+              
+              await Promise.race([streamPromise, timeoutPromise]);
+              
+              sendEvent('message', JSON.stringify({
+                model: 'gemini',
+                content: '',
+                isComplete: true,
+                round
+              }));
+              
+              roundResponses.push(`Gemini: ${fullResponse}`);
+            } catch (error) {
+              console.error('Gemini error:', error);
+              sendEvent('message', JSON.stringify({
+                model: 'gemini',
+                content: 'Gemini temporarily unavailable',
+                isComplete: true,
+                round
+              }));
+              roundResponses.push(`Gemini: Error - ${error.message}`);
             }
-            
-            sendEvent('message', JSON.stringify({
-              model: 'gemini',
-              content: '',
-              isComplete: true,
-              round
-            }));
-            
-            roundResponses.push(`Gemini: ${fullResponse}`);
           })()
         );
       }
@@ -440,28 +482,46 @@ app.post('/api/chat', async (req, res) => {
           }
         }
       } else if (moderatorEngine === 'claude') {
-        for await (const chunk of moderatorStream) {
-          if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
-            const content = chunk.delta.text;
-            fullModeratorResponse += content;
-            sendEvent('message', JSON.stringify({
-              model: 'moderator',
-              content: content,
-              isComplete: false
-            }));
+        try {
+          for await (const chunk of moderatorStream) {
+            if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
+              const content = chunk.delta.text;
+              fullModeratorResponse += content;
+              sendEvent('message', JSON.stringify({
+                model: 'moderator',
+                content: content,
+                isComplete: false
+              }));
+            }
           }
+        } catch (error) {
+          console.error('Moderator Claude error:', error);
+          sendEvent('message', JSON.stringify({
+            model: 'moderator',
+            content: 'Moderator analysis completed with errors',
+            isComplete: true
+          }));
         }
       } else if (moderatorEngine === 'gemini') {
-        for await (const chunk of moderatorStream.stream) {
-          const content = chunk.text();
-          if (content) {
-            fullModeratorResponse += content;
-            sendEvent('message', JSON.stringify({
-              model: 'moderator',
-              content: content,
-              isComplete: false
-            }));
+        try {
+          for await (const chunk of moderatorStream.stream) {
+            const content = chunk.text();
+            if (content) {
+              fullModeratorResponse += content;
+              sendEvent('message', JSON.stringify({
+                model: 'moderator',
+                content: content,
+                isComplete: false
+              }));
+            }
           }
+        } catch (error) {
+          console.error('Moderator Gemini error:', error);
+          sendEvent('message', JSON.stringify({
+            model: 'moderator',
+            content: 'Moderator analysis completed with errors',
+            isComplete: true
+          }));
         }
       }
 
