@@ -49,6 +49,11 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
+// Root route for platform health checks
+app.get('/', (_req, res) => {
+  res.send('ok');
+});
+
 app.get('/api/stats', (_req, res) => {
   res.json({ ...stats });
 });
@@ -63,6 +68,10 @@ function sseHeaders(res) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
 }
 
 function sseSend(res, event, dataObj) {
@@ -82,7 +91,7 @@ async function streamOpenAI({ prompt, language }) {
   const stream = await openai.chat.completions.create({
     model: OPENAI_CHAT_MODEL,
     messages: [
-      { role: 'system', content: `You answer in ${language}. Keep responses concise (about 80-150 words). Avoid headings and heavy formatting unless explicitly requested. Prefer bullet points only when necessary.` },
+      { role: 'system', content: `You answer in ${language}. Keep responses concise.` },
       { role: 'user', content: prompt },
     ],
     stream: true,
@@ -102,7 +111,7 @@ async function streamAnthropic({ prompt, language }) {
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
     max_tokens: 1024,
-    system: `You answer in ${language}. Keep responses concise (about 80-150 words). Avoid headings and heavy formatting unless explicitly requested. Prefer bullet points only when necessary.`,
+    system: `You answer in ${language}. Keep responses concise.`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
   return stream;
@@ -120,7 +129,7 @@ async function* chunksFromAnthropic(stream) {
 
 async function streamGemini({ prompt, language }) {
   if (!genAI) return;
-  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: `You answer in ${language}. Keep responses concise (about 80-150 words). Avoid headings and heavy formatting unless explicitly requested. Prefer bullet points only when necessary.` });
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: `You answer in ${language}. Keep responses concise.` });
   const result = await model.generateContentStream(prompt);
   return result;
 }
@@ -154,7 +163,7 @@ function moderatorPrompt(style, language, collected) {
     .map((c) => `- [${c.model} R${c.round}] ${c.text}`)
     .join('\n');
 
-  return `Act as a moderator. Language: ${language}.\n${styleGuidance} Keep it concise (about 80-150 words). Avoid headings and heavy formatting unless explicitly requested.\nSynthesize the following model responses into a single, helpful answer.\n\n${lines}`;
+  return `Act as a moderator. Language: ${language}.\n${styleGuidance}\nSynthesize the following model responses into a single, helpful answer.\n\n${lines}`;
 }
 
 // SSE Chat endpoint
@@ -178,6 +187,13 @@ app.post('/api/chat', async (req, res) => {
   }
 
   sseHeaders(res);
+  // Heartbeat to keep proxies from buffering/closing
+  const heartbeat = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch (_) {}
+  }, 15000);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+  });
   sseSend(res, 'meta', { startedAt, rounds, moderatorEngine, moderatorStyle });
 
   const active = [
