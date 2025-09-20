@@ -99,6 +99,7 @@ async function callClaude(messages, stream = false) {
     }
     
     console.log('Claude API call started with model:', CLAUDE_MODEL);
+    console.log('Original messages:', JSON.stringify(messages, null, 2));
     
     const systemMessage = messages.find(m => m.role === 'system');
     const userMessages = messages.filter(m => m.role !== 'system');
@@ -106,8 +107,13 @@ async function callClaude(messages, stream = false) {
     // Format messages for Claude API - content must be array format
     const formattedMessages = userMessages.map(msg => ({
       role: msg.role,
-      content: [{ type: 'text', text: msg.content }]
+      content: [{ 
+        type: 'text', 
+        text: typeof msg.content === 'string' ? msg.content : msg.content?.text || String(msg.content)
+      }]
     }));
+    
+    console.log('Formatted messages for Claude:', JSON.stringify(formattedMessages, null, 2));
     
     const requestBody = {
       model: CLAUDE_MODEL,
