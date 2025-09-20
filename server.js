@@ -94,8 +94,8 @@ async function callOpenAI(messages, stream = false) {
 
 async function callClaude(messages, stream = false) {
   try {
-    if (!anthropic) {
-      throw new Error('Anthropic client not initialized');
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error('ANTHROPIC_API_KEY not set');
     }
     
     console.log('Claude API call started with model:', CLAUDE_MODEL);
@@ -103,22 +103,44 @@ async function callClaude(messages, stream = false) {
     const systemMessage = messages.find(m => m.role === 'system');
     const userMessages = messages.filter(m => m.role !== 'system');
     
-    const response = await anthropic.messages.create({
+    const requestBody = {
       model: CLAUDE_MODEL,
       max_tokens: 2000,
-      system: systemMessage?.content || '',
       messages: userMessages,
-      stream: stream,
-      temperature: 0.7
+      temperature: 0.7,
+      stream: stream
+    };
+    
+    if (systemMessage?.content) {
+      requestBody.system = systemMessage.content;
+    }
+    
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify(requestBody)
     });
     
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData?.error?.message || `Claude HTTP ${response.status}`);
+    }
+    
+    if (stream) {
+      return response.body;
+    }
+    
+    const data = await response.json();
     console.log('Claude API call successful');
-    return response;
+    return data;
+    
   } catch (error) {
     console.error('Claude API Error Details:', {
       message: error.message,
-      status: error.status,
-      type: error.type,
       model: CLAUDE_MODEL
     });
     throw new Error(`Claude Error: ${error.message}`);
