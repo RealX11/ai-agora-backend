@@ -140,33 +140,46 @@ async function callGemini(messages, stream = false) {
 async function streamModelResponse(res, modelName, modelFunction, messages) {
   try {
     const stream = await modelFunction(messages, true);
+    let fullResponse = '';
     
     if (modelName === 'gpt') {
       for await (const chunk of stream) {
         const content = chunk.choices[0]?.delta?.content || '';
         if (content) {
+          fullResponse += content;
           res.write(`event: model_chunk\ndata: ${JSON.stringify({ model: modelName, textChunk: content })}\n\n`);
+          res.flush && res.flush(); // Force immediate send
         }
       }
     } else if (modelName === 'claude') {
       for await (const chunk of stream) {
         if (chunk.type === 'content_block_delta' && chunk.delta.text) {
+          fullResponse += chunk.delta.text;
           res.write(`event: model_chunk\ndata: ${JSON.stringify({ model: modelName, textChunk: chunk.delta.text })}\n\n`);
+          res.flush && res.flush(); // Force immediate send
         }
       }
     } else if (modelName === 'gemini') {
       for await (const chunk of stream.stream) {
         const text = chunk.text();
         if (text) {
+          fullResponse += text;
           res.write(`event: model_chunk\ndata: ${JSON.stringify({ model: modelName, textChunk: text })}\n\n`);
+          res.flush && res.flush(); // Force immediate send
         }
       }
     }
     
     res.write(`event: model_done\ndata: ${JSON.stringify({ model: modelName })}\n\n`);
+    res.flush && res.flush();
+    
+    return fullResponse; // Return full response for moderator
+    
   } catch (error) {
     console.error(`${modelName} streaming error:`, error);
     res.write(`event: error\ndata: ${JSON.stringify({ model: modelName, message: `${modelName.toUpperCase()} model is currently unavailable` })}\n\n`);
+    res.flush && res.flush();
+    return '';
   }
 }
 
@@ -250,29 +263,15 @@ app.post('/api/chat', async (req, res) => {
         });
       }
       
-      // Collect responses for each round (fixed: actually store responses)
+      // Collect responses for each round (parallel streaming)
       const modelPromises = activeModels.map(async (modelName) => {
         if (modelFunctions[modelName]) {
           try {
-            // Get non-streaming response first to store
-            const response = await modelFunctions[modelName](messages, false);
-            let responseText = '';
-            
-            if (modelName === 'gpt') {
-              responseText = response.choices[0]?.message?.content || '';
-            } else if (modelName === 'claude') {
-              responseText = response.content[0]?.text || '';
-            } else if (modelName === 'gemini') {
-              responseText = response.response.text() || '';
-            }
-            
-            roundResponses[modelName] = responseText;
-            
-            // Now stream the response
-            await streamModelResponse(res, modelName, modelFunctions[modelName], messages);
-            
+            const fullResponse = await streamModelResponse(res, modelName, modelFunctions[modelName], messages);
+            roundResponses[modelName] = fullResponse;
           } catch (error) {
             console.error(`[${requestId}] ${modelName} failed:`, error);
+            roundResponses[modelName] = '';
           }
         }
       });
