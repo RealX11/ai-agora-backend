@@ -103,10 +103,16 @@ async function callClaude(messages, stream = false) {
     const systemMessage = messages.find(m => m.role === 'system');
     const userMessages = messages.filter(m => m.role !== 'system');
     
+    // Format messages for Claude API - content must be array format
+    const formattedMessages = userMessages.map(msg => ({
+      role: msg.role,
+      content: [{ type: 'text', text: msg.content }]
+    }));
+    
     const requestBody = {
       model: CLAUDE_MODEL,
       max_tokens: 2000,
-      messages: userMessages,
+      messages: formattedMessages,
       temperature: 0.7,
       stream: stream
     };
