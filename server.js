@@ -94,6 +94,10 @@ async function callOpenAI(messages, stream = false) {
 
 async function callClaude(messages, stream = false) {
   try {
+    if (!anthropic) {
+      throw new Error('Anthropic client not initialized');
+    }
+    
     console.log('Claude API call started with model:', CLAUDE_MODEL);
     
     const systemMessage = messages.find(m => m.role === 'system');
