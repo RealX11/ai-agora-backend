@@ -82,7 +82,7 @@ async function streamOpenAI({ prompt, language }) {
   const stream = await openai.chat.completions.create({
     model: OPENAI_CHAT_MODEL,
     messages: [
-      { role: 'system', content: `You answer in ${language}. Keep responses concise.` },
+      { role: 'system', content: `You answer in ${language}. Keep responses concise (about 80-150 words). Avoid headings and heavy formatting unless explicitly requested. Prefer bullet points only when necessary.` },
       { role: 'user', content: prompt },
     ],
     stream: true,
@@ -102,7 +102,7 @@ async function streamAnthropic({ prompt, language }) {
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
     max_tokens: 1024,
-    system: `You answer in ${language}. Keep responses concise.`,
+    system: `You answer in ${language}. Keep responses concise (about 80-150 words). Avoid headings and heavy formatting unless explicitly requested. Prefer bullet points only when necessary.`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
   return stream;
@@ -120,7 +120,7 @@ async function* chunksFromAnthropic(stream) {
 
 async function streamGemini({ prompt, language }) {
   if (!genAI) return;
-  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: `You answer in ${language}. Keep responses concise.` });
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: `You answer in ${language}. Keep responses concise (about 80-150 words). Avoid headings and heavy formatting unless explicitly requested. Prefer bullet points only when necessary.` });
   const result = await model.generateContentStream(prompt);
   return result;
 }
@@ -154,7 +154,7 @@ function moderatorPrompt(style, language, collected) {
     .map((c) => `- [${c.model} R${c.round}] ${c.text}`)
     .join('\n');
 
-  return `Act as a moderator. Language: ${language}.\n${styleGuidance}\nSynthesize the following model responses into a single, helpful answer.\n\n${lines}`;
+  return `Act as a moderator. Language: ${language}.\n${styleGuidance} Keep it concise (about 80-150 words). Avoid headings and heavy formatting unless explicitly requested.\nSynthesize the following model responses into a single, helpful answer.\n\n${lines}`;
 }
 
 // SSE Chat endpoint
