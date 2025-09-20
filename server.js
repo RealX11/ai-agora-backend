@@ -3,13 +3,13 @@ const cors = require('cors');
 require('dotenv').config();
 
 const OpenAI = require('openai');
-const Anthropic = require('@anthropic-ai/sdk');
+const Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // Model Constants (birebir dokümandaki gibi)
 const OPENAI_CHAT_MODEL = 'gpt-4o';
-const CLAUDE_MODEL = 'claude-3-5-sonnet-20241022';
-const GEMINI_MODEL = 'gemini-2.0-flash-exp';
+const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+const GEMINI_MODEL = 'gemini-2.5-pro';
 
 // Initialize API clients
 const openai = new OpenAI({
