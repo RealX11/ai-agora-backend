@@ -134,8 +134,8 @@ async function callClaude(messages, language, moderatorStyle) {
     const systemPrompt = generateSystemPrompt(language, moderatorStyle);
     const userMessage = messages.map(msg => msg.content).join('\n');
     
-    // Use the correct Anthropic SDK method
-    const response = await anthropic.messages.stream({
+    // Use the correct Anthropic SDK method with .stream() helper
+    const stream = anthropic.messages.stream({
       model: CLAUDE_MODEL,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
@@ -143,7 +143,7 @@ async function callClaude(messages, language, moderatorStyle) {
       temperature: 0.7
     });
 
-    return response;
+    return stream;
   } catch (error) {
     console.error('Claude API Error:', error);
     throw error;
@@ -361,18 +361,19 @@ app.post('/api/chat', async (req, res) => {
               const stream = await callClaude(messages, detectedLanguage, moderatorStyle);
               let fullResponse = '';
               
-              for await (const chunk of stream) {
-                if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
-                  const content = chunk.delta.text;
-                  fullResponse += content;
-                  sendEvent('message', JSON.stringify({
-                    model: 'claude',
-                    content: content,
-                    isComplete: false,
-                    round
-                  }));
-                }
-              }
+              // Use the .on('text') event handler for real-time streaming
+              stream.on('text', (text) => {
+                fullResponse += text;
+                sendEvent('message', JSON.stringify({
+                  model: 'claude',
+                  content: text,
+                  isComplete: false,
+                  round
+                }));
+              });
+
+              // Wait for the stream to complete
+              const finalMessage = await stream.finalMessage();
               
               sendEvent('message', JSON.stringify({
                 model: 'claude',
@@ -483,17 +484,24 @@ app.post('/api/chat', async (req, res) => {
         }
       } else if (moderatorEngine === 'claude') {
         try {
-          for await (const chunk of moderatorStream) {
-            if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
-              const content = chunk.delta.text;
-              fullModeratorResponse += content;
-              sendEvent('message', JSON.stringify({
-                model: 'moderator',
-                content: content,
-                isComplete: false
-              }));
-            }
-          }
+          const moderatorStream = await generateModeratorResponse(
+            flatResponses, 
+            message, 
+            detectedLanguage, 
+            moderatorStyle, 
+            moderatorEngine
+          );
+          
+          moderatorStream.on('text', (text) => {
+            fullModeratorResponse += text;
+            sendEvent('message', JSON.stringify({
+              model: 'moderator',
+              content: text,
+              isComplete: false
+            }));
+          });
+
+          await moderatorStream.finalMessage();
         } catch (error) {
           console.error('Moderator Claude error:', error);
           sendEvent('message', JSON.stringify({
