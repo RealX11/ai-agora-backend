@@ -84,17 +84,24 @@ function generateSystemPrompt(language, moderatorStyle, isModeratorTurn = false,
   };
 
   const styleInstructions = {
-    'neutral': 'Provide a balanced, objective perspective without strong opinions.',
-    'analytical': 'Focus on data, facts, and logical analysis. Break down complex topics systematically.',
-    'educational': 'Explain concepts clearly as if teaching. Include examples and context.',
-    'creative': 'Think outside the box and provide innovative, imaginative perspectives.',
-    'quick-summary': 'Be concise and to the point. Summarize key information efficiently.'
+    'neutral': 'Provide a balanced, objective perspective. Keep it concise and focused.',
+    'analytical': 'Focus on data, facts, and logical analysis. Be brief and systematic.',
+    'educational': 'Explain concepts clearly with examples. Keep it short and digestible.',
+    'creative': 'Think creatively and provide innovative perspectives. Stay concise.',
+    'quick-summary': 'Be extremely concise. Provide only key points in 2-3 sentences maximum.'
   };
 
-  let prompt = `You are an AI assistant responding in ${languageMap[language]}. ${styleInstructions[moderatorStyle]}`;
+  let prompt = `You are an AI assistant responding in ${languageMap[language]}. ${styleInstructions[moderatorStyle]}
+
+CRITICAL: Your response must be concise and focused. Maximum 150 words. Be direct and avoid unnecessary elaboration.`;
 
   if (isModeratorTurn && previousResponses) {
-    prompt += `\n\nAs the moderator, you have access to responses from other AI models. Your role is to synthesize their perspectives and provide a comprehensive final answer that incorporates the best insights from each response while maintaining your ${moderatorStyle} style.`;
+    prompt += `
+
+As the moderator, synthesize the following AI responses briefly and highlight key insights:
+${previousResponses.join('\n\n')}
+
+Provide a concise synthesis in maximum 100 words that captures the essence of different perspectives.`;
   }
 
   return prompt;
@@ -112,7 +119,7 @@ async function callOpenAI(messages, language, moderatorStyle) {
       ],
       stream: true,
       temperature: 0.7,
-      max_tokens: 1000
+      max_tokens: 200 // Reduced for concise responses
     });
 
     return response;
@@ -127,12 +134,13 @@ async function callClaude(messages, language, moderatorStyle) {
     const systemPrompt = generateSystemPrompt(language, moderatorStyle);
     const userMessage = messages.map(msg => msg.content).join('\n');
     
-    const response = await anthropic.messages.stream({
+    const response = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
-      max_tokens: 1000,
-      temperature: 0.7
+      max_tokens: 200, // Reduced for concise responses
+      temperature: 0.7,
+      stream: true
     });
 
     return response;
@@ -144,7 +152,13 @@ async function callClaude(messages, language, moderatorStyle) {
 
 async function callGemini(messages, language, moderatorStyle) {
   try {
-    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+    const model = genAI.getGenerativeModel({ 
+      model: GEMINI_MODEL,
+      generationConfig: {
+        maxOutputTokens: 200, // Reduced for concise responses
+        temperature: 0.7,
+      }
+    });
     const systemPrompt = generateSystemPrompt(language, moderatorStyle);
     const userMessage = messages.map(msg => msg.content).join('\n');
     const prompt = `${systemPrompt}\n\nUser: ${userMessage}`;
@@ -196,7 +210,7 @@ async function streamModelResponse(modelName, stream, res, sendEvent) {
       }
     } else if (modelName === 'claude') {
       for await (const chunk of stream) {
-        if (chunk.type === 'content_block_delta') {
+        if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
           sendEvent('message', JSON.stringify({
             model: modelName,
             content: chunk.delta.text,
@@ -242,6 +256,7 @@ app.post('/api/chat', async (req, res) => {
       rounds = 1, 
       moderatorStyle = 'neutral',
       moderatorEngine = 'gpt',
+      enableModerator = true,
       language 
     } = req.body;
 
@@ -290,7 +305,7 @@ app.post('/api/chat', async (req, res) => {
         
         messages.push({ 
           role: 'user', 
-          content: `${contextMessage}\n\nPlease provide your updated response considering the above discussions.` 
+          content: `${contextMessage}\n\nPlease provide your updated response considering the above discussions. Keep it brief and focused.` 
         });
       }
 
@@ -335,7 +350,7 @@ app.post('/api/chat', async (req, res) => {
             let fullResponse = '';
             
             for await (const chunk of stream) {
-              if (chunk.type === 'content_block_delta') {
+              if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
                 const content = chunk.delta.text;
                 fullResponse += content;
                 sendEvent('message', JSON.stringify({
@@ -396,8 +411,8 @@ app.post('/api/chat', async (req, res) => {
       allRoundResponses.push(roundResponses);
     }
 
-    // Generate moderator response
-    if (allRoundResponses.length > 0) {
+    // Generate moderator response only if enabled
+    if (enableModerator && allRoundResponses.length > 0) {
       serverStats.modelUsage.moderator++;
       sendEvent('moderator', JSON.stringify({ message: 'Moderator analysis starting...' }));
       
@@ -426,7 +441,7 @@ app.post('/api/chat', async (req, res) => {
         }
       } else if (moderatorEngine === 'claude') {
         for await (const chunk of moderatorStream) {
-          if (chunk.type === 'content_block_delta') {
+          if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
             const content = chunk.delta.text;
             fullModeratorResponse += content;
             sendEvent('message', JSON.stringify({
