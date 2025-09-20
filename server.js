@@ -49,11 +49,6 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
-// Root route for platform health checks
-app.get('/', (_req, res) => {
-  res.send('ok');
-});
-
 app.get('/api/stats', (_req, res) => {
   res.json({ ...stats });
 });
@@ -68,10 +63,6 @@ function sseHeaders(res) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  if (typeof res.flushHeaders === 'function') {
-    res.flushHeaders();
-  }
 }
 
 function sseSend(res, event, dataObj) {
@@ -187,13 +178,6 @@ app.post('/api/chat', async (req, res) => {
   }
 
   sseHeaders(res);
-  // Heartbeat to keep proxies from buffering/closing
-  const heartbeat = setInterval(() => {
-    try { res.write(': ping\n\n'); } catch (_) {}
-  }, 15000);
-  req.on('close', () => {
-    clearInterval(heartbeat);
-  });
   sseSend(res, 'meta', { startedAt, rounds, moderatorEngine, moderatorStyle });
 
   const active = [
