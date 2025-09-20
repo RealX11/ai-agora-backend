@@ -101,7 +101,7 @@ async function callClaude(messages, stream = false) {
     
     const response = await anthropic.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: 400,
+      max_tokens: 2000,
       system: systemMessage?.content || '',
       messages: userMessages,
       stream: stream,
