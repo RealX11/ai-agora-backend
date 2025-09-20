@@ -1,375 +1,318 @@
-const express = require('express');
-const cors = require('cors');
-require('dotenv').config();
-const { OpenAI } = require('openai');
-const Anthropic = require('@anthropic-ai/sdk');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// --- Model Sabitleri (Değiştirilemez) ---
-const OPENAI_CHAT_MODEL = 'gpt-4o';
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-const GEMINI_MODEL = 'gemini-2.5-pro';
-// ----------------------------------------
+// Load env
+dotenv.config();
+
+// Env validation
+const requiredEnv = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_AI_API_KEY'];
+const missing = requiredEnv.filter((k) => !process.env[k]);
+if (missing.length) {
+  console.warn(`[warn] Missing env vars: ${missing.join(', ')}. Some providers will be disabled.`);
+}
+
+// Constants per spec
+export const OPENAI_CHAT_MODEL = 'gpt-4o';
+export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+export const GEMINI_MODEL = 'gemini-2.5-pro';
+
+const PORT = process.env.PORT || 3000;
+
+// Clients
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
+const anthropic = process.env.ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  : null;
+const genAI = process.env.GOOGLE_AI_API_KEY
+  ? new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY)
+  : null;
 
 const app = express();
-const port = process.env.PORT || 3000;
-
-// Middleware
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '1mb' }));
 
-// API Client Initialization
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-
-// Environment Variable Validation
-const validateEnv = () => {
-  const missing = [];
-  if (!process.env.OPENAI_API_KEY) missing.push('OPENAI_API_KEY');
-  if (!process.env.ANTHROPIC_API_KEY) missing.push('ANTHROPIC_API_KEY');
-  if (!process.env.GOOGLE_AI_API_KEY) missing.push('GOOGLE_AI_API_KEY');
-  
-  if (missing.length > 0) {
-    console.warn(`Warning: Missing environment variables: ${missing.join(', ')}`);
-  }
+// Simple in-memory stats
+const stats = {
+  startedAt: new Date().toISOString(),
+  requests: 0,
+  chats: 0,
+  feedbacks: 0,
 };
-validateEnv();
 
-// Utility Functions
-function createSSEMessage(event, data) {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-}
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
 
-function getSystemPromptForModerator(style, language, rounds, question, modelResponses) {
-  const basePrompt = {
-    neutral: `Provide a balanced and objective summary of the following AI responses to the question: "${question}".`,
-    analytical: `Analyze the following AI responses. Compare their strengths, weaknesses, and points of agreement/disagreement regarding: "${question}".`,
-    educational: `Explain the key insights from these AI responses to the question: "${question}" in an informative and easy-to-understand manner.`,
-    creative: `Synthesize these AI responses to the question: "${question}" into a creative and engaging narrative or explanation.`,
-    'quick-summary': `Provide a very concise bullet-point summary of the main points from these AI responses to: "${question}".`
-  }[style] || basePrompt.neutral;
+app.get('/api/stats', (_req, res) => {
+  res.json({ ...stats });
+});
 
-  const roundContext = rounds > 1 ? 
-    ` The models have engaged in ${rounds} rounds of discussion, refining their perspectives.` : 
-    '';
+app.post('/api/feedback', (req, res) => {
+  stats.feedbacks += 1;
+  console.log('[feedback]', JSON.stringify(req.body));
+  res.json({ ok: true });
+});
 
-  const responsesText = modelResponses.map(r => `--- ${r.model} ---\n${r.text}`).join('\n\n');
-
-  return `${basePrompt}${roundContext}\n\n${responsesText}`;
-}
-
-// SSE Chat Endpoint
-app.post('/api/chat', async (req, res) => {
-  // Set SSE headers
+function sseHeaders(res) {
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.flushHeaders();
+}
+
+function sseSend(res, event, dataObj) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(dataObj)}\n\n`);
+}
+
+function sseDone(res) {
+  res.write('event: done\n');
+  res.write('data: {}\n\n');
+  res.end();
+}
+
+// Provider streaming helpers
+async function streamOpenAI({ prompt, language }) {
+  if (!openai) return;
+  const stream = await openai.chat.completions.create({
+    model: OPENAI_CHAT_MODEL,
+    messages: [
+      { role: 'system', content: `You answer in ${language}. Keep responses concise.` },
+      { role: 'user', content: prompt },
+    ],
+    stream: true,
+  });
+  return stream;
+}
+
+async function* chunksFromOpenAI(stream) {
+  for await (const part of stream) {
+    const delta = part.choices?.[0]?.delta?.content || '';
+    if (delta) yield delta;
+  }
+}
+
+async function streamAnthropic({ prompt, language }) {
+  if (!anthropic) return;
+  const stream = await anthropic.messages.stream({
+    model: CLAUDE_MODEL,
+    max_tokens: 1024,
+    system: `You answer in ${language}. Keep responses concise.`,
+    messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+  });
+  return stream;
+}
+
+async function* chunksFromAnthropic(stream) {
+  for await (const event of stream) {
+    if (event.type === 'message_start' || event.type === 'message_delta') continue;
+    if (event.type === 'content_block_delta') {
+      const t = event.delta?.text;
+      if (t) yield t;
+    }
+  }
+}
+
+async function streamGemini({ prompt, language }) {
+  if (!genAI) return;
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: `You answer in ${language}. Keep responses concise.` });
+  const result = await model.generateContentStream(prompt);
+  return result;
+}
+
+async function* chunksFromGemini(stream) {
+  for await (const item of stream.stream) {
+    const t = item?.text();
+    if (t) yield t;
+  }
+}
+
+function buildRoundPrompt(basePrompt, round, allRoundResponses) {
+  if (round === 1) return basePrompt;
+  const prev = allRoundResponses
+    .filter((r) => r.round < round)
+    .map((r) => `- [${r.model}] ${r.text}`)
+    .join('\n');
+  return `${basePrompt}\n\nOther models said previously:\n${prev}\n\nBriefly comment on agreements/disagreements and, if needed, refine your answer.`;
+}
+
+function moderatorPrompt(style, language, collected) {
+  const styleGuidance = {
+    neutral: 'Balanced and concise final answer.',
+    analytical: 'Compare and contrast key points analytically.',
+    educational: 'Explain clearly with simple examples if useful.',
+    creative: 'Provide an engaging, creative synthesis.',
+    'quick-summary': 'Provide a terse executive summary.',
+  }[style] || 'Balanced and concise final answer.';
+
+  const lines = collected
+    .map((c) => `- [${c.model} R${c.round}] ${c.text}`)
+    .join('\n');
+
+  return `Act as a moderator. Language: ${language}.\n${styleGuidance}\nSynthesize the following model responses into a single, helpful answer.\n\n${lines}`;
+}
+
+// SSE Chat endpoint
+app.post('/api/chat', async (req, res) => {
+  stats.requests += 1;
+  const startedAt = Date.now();
 
   const {
-    question,
-    activeModels = ['gpt', 'claude', 'gemini'],
+    prompt,
+    language = 'English',
     rounds = 1,
-    moderatorEngine = 'moderator',
+    useGPT = true,
+    useClaude = true,
+    useGemini = true,
+    moderatorEngine = 'Moderator', // 'GPT' | 'Claude' | 'Gemini' | 'Moderator'
     moderatorStyle = 'neutral',
-    language = null
-  } = req.body;
+  } = req.body || {};
 
-  // Input validation
-  if (!question || question.trim().length === 0) {
-    res.write(createSSEMessage('error', { message: 'Question is required' }));
-    res.end();
-    return;
+  if (!prompt || typeof prompt !== 'string') {
+    return res.status(400).json({ error: 'Missing prompt' });
   }
 
-  if (activeModels.length === 0) {
-    res.write(createSSEMessage('error', { message: 'At least one model must be active' }));
-    res.end();
-    return;
+  sseHeaders(res);
+  sseSend(res, 'meta', { startedAt, rounds, moderatorEngine, moderatorStyle });
+
+  const active = [
+    useGPT && openai ? 'GPT' : null,
+    useClaude && anthropic ? 'Claude' : null,
+    useGemini && genAI ? 'Gemini' : null,
+  ].filter(Boolean);
+
+  if (active.length === 0) {
+    sseSend(res, 'error', { message: 'No providers available or enabled.' });
+    return sseDone(res);
   }
 
-  const requestId = Math.random().toString(36).substring(2, 9);
-  console.log(`[${requestId}] New request for: "${question.substring(0, 50)}${question.length > 50 ? '...' : ''}"`);
+  // First-come-first-serve streaming over rounds
+  const collected = [];
 
-  // Send session start event
-  res.write(createSSEMessage('session_start', { 
-    requestId,
-    timestamp: new Date().toISOString()
-  }));
+  for (let r = 1; r <= Math.max(1, Math.min(3, rounds)); r++) {
+    sseSend(res, 'round', { round: r, message: r === 1 ? 'Round 1 starting…' : `Round ${r} starting…` });
 
-  let allModelResponses = [];
-  const modelMap = {
-    gpt: { name: 'GPT', model: OPENAI_CHAT_MODEL, active: activeModels.includes('gpt') },
-    claude: { name: 'Claude', model: CLAUDE_MODEL, active: activeModels.includes('claude') },
-    gemini: { name: 'Gemini', model: GEMINI_MODEL, active: activeModels.includes('gemini') }
-  };
+    const roundPrompt = buildRoundPrompt(prompt, r, collected);
 
-  // Main processing loop for rounds
-  try {
-    for (let currentRound = 1; currentRound <= rounds; currentRound++) {
-      // Send round start event
-      if (currentRound > 1) {
-        res.write(createSSEMessage('round_complete', { round: currentRound - 1 }));
-        res.write(createSSEMessage('round_start', { round: currentRound }));
-      }
+    const tasks = [];
 
-      const roundPromises = [];
-      const roundResponses = [];
-
-      // OpenAI GPT processing
-      if (modelMap.gpt.active) {
-        roundPromises.push((async () => {
-          try {
-            const stream = await openai.chat.completions.create({
-              model: modelMap.gpt.model,
-              messages: [
-                {
-                  role: 'system',
-                  content: currentRound === 1 ? 
-                    `Answer the user's question clearly and concisely in ${language || 'the same language as the question'}.` :
-                    `Review the previous round responses and provide your analysis. Identify points of agreement/disagreement and refine your answer. Use ${language || 'the same language as the question'}.`
-                },
-                {
-                  role: 'user', 
-                  content: currentRound === 1 ? 
-                    question : 
-                    `Original question: ${question}\n\nPrevious responses:\n${allModelResponses.map(r => `${r.model}: ${r.text}`).join('\n\n')}`
-                }
-              ],
-              stream: true,
-              max_tokens: 1024
-            });
-
-            let fullResponse = '';
-            for await (const chunk of stream) {
-              const content = chunk.choices[0]?.delta?.content || '';
-              if (content) {
-                fullResponse += content;
-                res.write(createSSEMessage('model_chunk', { 
-                  model: 'gpt', 
-                  textChunk: content 
-                }));
-              }
-            }
-
-            roundResponses.push({ model: 'gpt', text: fullResponse });
-            res.write(createSSEMessage('model_done', { model: 'gpt' }));
-
-          } catch (error) {
-            console.error(`[${requestId}] GPT error:`, error.message);
-            res.write(createSSEMessage('error', { 
-              model: 'gpt', 
-              message: error.message 
-            }));
+    if (active.includes('GPT')) {
+      tasks.push({
+        name: 'GPT',
+        run: async function* () {
+          const stream = await streamOpenAI({ prompt: roundPrompt, language });
+          if (!stream) return;
+          for await (const chunk of chunksFromOpenAI(stream)) {
+            yield { model: 'GPT', round: r, chunk };
           }
-        })());
-      }
-
-      // Anthropic Claude processing
-      if (modelMap.claude.active) {
-        roundPromises.push((async () => {
-          try {
-            const stream = await anthropic.messages.create({
-              model: modelMap.claude.model,
-              max_tokens: 1024,
-              messages: [{
-                role: 'user',
-                content: currentRound === 1 ? 
-                  question : 
-                  `Original question: ${question}\n\nPrevious responses:\n${allModelResponses.map(r => `${r.model}: ${r.text}`).join('\n\n')}\n\nPlease analyze these responses and provide your refined perspective.`
-              }],
-              stream: true
-            });
-
-            let fullResponse = '';
-            for await (const chunk of stream) {
-              if (chunk.type === 'content_block_delta') {
-                const content = chunk.delta.text || '';
-                fullResponse += content;
-                res.write(createSSEMessage('model_chunk', { 
-                  model: 'claude', 
-                  textChunk: content 
-                }));
-              }
-            }
-
-            roundResponses.push({ model: 'claude', text: fullResponse });
-            res.write(createSSEMessage('model_done', { model: 'claude' }));
-
-          } catch (error) {
-            console.error(`[${requestId}] Claude error:`, error.message);
-            res.write(createSSEMessage('error', { 
-              model: 'claude', 
-              message: error.message 
-            }));
-          }
-        })());
-      }
-
-      // Google Gemini processing
-      if (modelMap.gemini.active) {
-        roundPromises.push((async () => {
-          try {
-            const model = genAI.getGenerativeModel({ model: modelMap.gemini.model });
-            const prompt = currentRound === 1 ? 
-              question : 
-              `Original question: ${question}\n\nPrevious responses:\n${allModelResponses.map(r => `${r.model}: ${r.text}`).join('\n\n')}\n\nPlease analyze these responses and provide your refined perspective.`;
-
-            const result = await model.generateContentStream(prompt);
-            let fullResponse = '';
-
-            for await (const chunk of result.stream) {
-              const content = chunk.text();
-              if (content) {
-                fullResponse += content;
-                res.write(createSSEMessage('model_chunk', { 
-                  model: 'gemini', 
-                  textChunk: content 
-                }));
-              }
-            }
-
-            roundResponses.push({ model: 'gemini', text: fullResponse });
-            res.write(createSSEMessage('model_done', { model: 'gemini' }));
-
-          } catch (error) {
-            console.error(`[${requestId}] Gemini error:`, error.message);
-            res.write(createSSEMessage('error', { 
-              model: 'gemini', 
-              message: error.message 
-            }));
-          }
-        })());
-      }
-
-      // Wait for all models to complete this round
-      await Promise.allSettled(roundPromises);
-      allModelResponses = roundResponses;
+        },
+      });
     }
 
-    // Moderator phase
-    if (allModelResponses.length > 0) {
-      res.write(createSSEMessage('round_complete', { round: rounds }));
-      
-      const moderatorPrompt = getSystemPromptForModerator(
-        moderatorStyle, 
-        language, 
-        rounds, 
-        question, 
-        allModelResponses
+    if (active.includes('Claude')) {
+      tasks.push({
+        name: 'Claude',
+        run: async function* () {
+          const stream = await streamAnthropic({ prompt: roundPrompt, language });
+          if (!stream) return;
+          for await (const chunk of chunksFromAnthropic(stream)) {
+            yield { model: 'Claude', round: r, chunk };
+          }
+        },
+      });
+    }
+
+    if (active.includes('Gemini')) {
+      tasks.push({
+        name: 'Gemini',
+        run: async function* () {
+          const stream = await streamGemini({ prompt: roundPrompt, language });
+          if (!stream) return;
+          for await (const chunk of chunksFromGemini(stream)) {
+            yield { model: 'Gemini', round: r, chunk };
+          }
+        },
+      });
+    }
+
+    // Run all providers concurrently and pipe chunks as they arrive
+    await new Promise(async (resolveRound) => {
+      const buffers = new Map();
+      let completedCount = 0;
+
+      await Promise.all(
+        tasks.map(async (t) => {
+          buffers.set(t.name, '');
+          try {
+            for await (const item of t.run()) {
+              const prev = buffers.get(t.name) || '';
+              buffers.set(t.name, prev + item.chunk);
+              sseSend(res, 'chunk', { model: item.model, round: r, text: item.chunk });
+            }
+            completedCount += 1;
+          } catch (e) {
+            completedCount += 1;
+            sseSend(res, 'provider_error', { model: t.name, round: r, message: String(e?.message || e) });
+          }
+        })
       );
 
-      // Use the selected engine for moderation
-      try {
-        if (moderatorEngine === 'gpt') {
-          const stream = await openai.chat.completions.create({
-            model: OPENAI_CHAT_MODEL,
-            messages: [
-              { role: 'system', content: moderatorPrompt },
-              { role: 'user', content: 'Please synthesize the responses.' }
-            ],
-            stream: true,
-            max_tokens: 1024
-          });
-
-          for await (const chunk of stream) {
-            const content = chunk.choices[0]?.delta?.content || '';
-            if (content) {
-              res.write(createSSEMessage('model_chunk', { 
-                model: 'moderator', 
-                textChunk: content 
-              }));
-            }
-          }
-        } 
-        // Similar logic for claude and gemini moderator engines would go here
-        // For simplicity, using GPT as default moderator if not specified
-        else {
-          const stream = await openai.chat.completions.create({
-            model: OPENAI_CHAT_MODEL,
-            messages: [
-              { role: 'system', content: moderatorPrompt },
-              { role: 'user', content: 'Please provide a comprehensive synthesis.' }
-            ],
-            stream: true,
-            max_tokens: 1024
-          });
-
-          for await (const chunk of stream) {
-            const content = chunk.choices[0]?.delta?.content || '';
-            if (content) {
-              res.write(createSSEMessage('model_chunk', { 
-                model: 'moderator', 
-                textChunk: content 
-              }));
-            }
-          }
+      // Push full messages for this round
+      for (const [model, text] of buffers.entries()) {
+        if (text) {
+          collected.push({ model, round: r, text });
+          sseSend(res, 'message', { model, round: r, text });
         }
-
-        res.write(createSSEMessage('model_done', { model: 'moderator' }));
-
-      } catch (error) {
-        console.error(`[${requestId}] Moderator error:`, error.message);
-        res.write(createSSEMessage('error', { 
-          model: 'moderator', 
-          message: error.message 
-        }));
       }
-    }
 
-    // Send completion event
-    res.write(createSSEMessage('done', { 
-      requestId,
-      timestamp: new Date().toISOString()
-    }));
-
-  } catch (error) {
-    console.error(`[${requestId}] General error:`, error.message);
-    res.write(createSSEMessage('error', { 
-      message: `Processing error: ${error.message}` 
-    }));
-  } finally {
-    res.end();
+      resolveRound();
+    });
   }
-});
 
-// Health endpoint
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    models: {
-      openai: !!process.env.OPENAI_API_KEY,
-      anthropic: !!process.env.ANTHROPIC_API_KEY,
-      google: !!process.env.GOOGLE_AI_API_KEY
+  // Moderator step
+  const modPrompt = moderatorPrompt(moderatorStyle, language, collected);
+
+  async function* moderatorRun() {
+    if (moderatorEngine === 'GPT' && openai) {
+      const s = await streamOpenAI({ prompt: modPrompt, language });
+      for await (const c of chunksFromOpenAI(s)) yield c;
+      return;
     }
-  });
+    if (moderatorEngine === 'Claude' && anthropic) {
+      const s = await streamAnthropic({ prompt: modPrompt, language });
+      for await (const c of chunksFromAnthropic(s)) yield c;
+      return;
+    }
+    if (moderatorEngine === 'Gemini' && genAI) {
+      const s = await streamGemini({ prompt: modPrompt, language });
+      for await (const c of chunksFromGemini(s)) yield c;
+      return;
+    }
+    if (openai) {
+      const s = await streamOpenAI({ prompt: modPrompt, language });
+      for await (const c of chunksFromOpenAI(s)) yield c;
+      return;
+    }
+    // If no providers for moderator
+    return;
+  }
+
+  let modBuf = '';
+  for await (const chunk of moderatorRun()) {
+    modBuf += chunk;
+    sseSend(res, 'moderator_chunk', { text: chunk });
+  }
+  if (modBuf) sseSend(res, 'moderator_message', { text: modBuf });
+
+  stats.chats += 1;
+  sseDone(res);
 });
 
-// Feedback endpoint
-app.post('/api/feedback', (req, res) => {
-  const { message, timestamp, clientInfo } = req.body;
-  
-  console.log('Feedback received:', { 
-    timestamp, 
-    clientInfo,
-    message: message.substring(0, 100) + (message.length > 100 ? '...' : '')
-  });
-  
-  res.json({ status: 'received', id: Date.now() });
-});
-
-// Stats endpoint (optional)
-app.get('/api/stats', (req, res) => {
-  res.json({
-    requests_processed: 0, // Would track in production
-    average_latency: 0,
-    success_rate: 1.0
-  });
-});
-
-app.listen(port, () => {
-  console.log(`AI Agora backend running on port ${port}`);
+app.listen(PORT, () => {
+  console.log(`AI Agora backend listening on :${PORT}`);
 });
