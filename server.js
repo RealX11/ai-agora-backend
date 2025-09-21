@@ -109,6 +109,24 @@ function sseDone(res) {
   res.end();
 }
 
+// Serious topic detection
+function detectSeriousTopic(prompt) {
+  const seriousKeywords = [
+    // Health
+    'hasta', 'hastalık', 'ağrı', 'kanser', 'kalp', 'depresyon', 'ilaç', 'doktor', 'acil',
+    'sick', 'disease', 'pain', 'cancer', 'heart', 'depression', 'medicine', 'doctor', 'emergency',
+    // Legal/Financial
+    'boşanma', 'dava', 'mahkeme', 'iflas', 'borç', 'avukat', 'hukuki',
+    'divorce', 'lawsuit', 'court', 'bankruptcy', 'debt', 'lawyer', 'legal',
+    // Crisis
+    'intihar', 'şiddet', 'yardım edin', 'kriz', 'ölüm', 'vefat',
+    'suicide', 'violence', 'help me', 'crisis', 'death', 'died'
+  ];
+  
+  const lowerPrompt = prompt.toLowerCase();
+  return seriousKeywords.some(keyword => lowerPrompt.includes(keyword));
+}
+
 // Provider streaming helpers
 async function streamOpenAI({ prompt, language }) {
   if (!openai) return;
@@ -172,16 +190,22 @@ async function* chunksFromGemini(stream) {
   }
 }
 
-function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = null) {
+function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = null, isSerious = false) {
   let prompt = basePrompt;
   
   // Round-based instructions
   if (round === 1) {
-    prompt += "\n\n[ROUND 1 INSTRUCTION]: This is the first round. No other AI responses exist yet. Focus only on the question and give a direct answer. Don't mention previous rounds, previous responses, or other AIs.";
+    prompt += isSerious 
+      ? "\n\n[ROUND 1 INSTRUCTION]: This appears to be a serious topic. Provide direct, helpful, and empathetic responses without playful elements."
+      : "\n\n[ROUND 1 INSTRUCTION]: This is the first round. No other AI responses exist yet. Focus only on the question and give a direct answer. Don't mention previous rounds, previous responses, or other AIs.";
   } else if (round === 2) {
-    prompt += "\n\n[ROUND 2 INSTRUCTION]: This is the second round. Reference other AIs' responses (not your own!) with brief, playful references. IGNORE YOUR OWN PREVIOUS RESPONSE - act as if you never wrote it. Only mention other AIs. Be witty and make the reader smile!";
+    prompt += isSerious
+      ? "\n\n[ROUND 2 INSTRUCTION]: Reference other AIs' responses professionally. Be thorough, supportive, and provide helpful information."
+      : "\n\n[ROUND 2 INSTRUCTION]: This is the second round. Reference other AIs' responses (not your own!) with brief, playful references. IGNORE YOUR OWN PREVIOUS RESPONSE - act as if you never wrote it. Only mention other AIs. Be witty and make the reader smile!";
   } else if (round === 3) {
-    prompt += "\n\n[ROUND 3 - SERIOUS ANALYSIS]: Alright, let's get serious. If you requested three rounds, you must be serious about this topic! 😏 Analyze other AIs' previous responses, start with a clever quip but then dive deep. Provide practical solutions, real data, concrete suggestions. Be both entertaining and informative - but this time deliver genuinely useful results!";
+    prompt += isSerious
+      ? "\n\n[ROUND 3 - COMPREHENSIVE ANALYSIS]: Provide a thorough, professional analysis of other AIs' responses. Focus on practical solutions and actionable advice."
+      : "\n\n[ROUND 3 - SERIOUS ANALYSIS]: Alright, let's get serious. If you requested three rounds, you must be serious about this topic! 😏 Analyze other AIs' previous responses, start with a clever quip but then dive deep. Provide practical solutions, real data, concrete suggestions. Be both entertaining and informative - but this time deliver genuinely useful results!";
   }
   
   if (round === 1) return prompt;
@@ -245,6 +269,9 @@ app.post('/api/chat', async (req, res) => {
   sseHeaders(res);
   sseSend(res, 'meta', { startedAt, rounds, moderatorEngine, moderatorStyle });
 
+  // Detect if topic is serious
+  const isSerious = detectSeriousTopic(prompt);
+
   const active = [
     useGPT && openai ? 'GPT' : null,
     useClaude && anthropic ? 'Claude' : null,
@@ -268,7 +295,7 @@ app.post('/api/chat', async (req, res) => {
       tasks.push({
         name: 'GPT',
         run: async function* () {
-          const gptPrompt = buildRoundPrompt(prompt, r, collected, 'GPT');
+          const gptPrompt = buildRoundPrompt(prompt, r, collected, 'GPT', isSerious);
           const stream = await streamOpenAI({ prompt: gptPrompt, language });
           if (!stream) return;
           for await (const chunk of chunksFromOpenAI(stream)) {
@@ -282,7 +309,7 @@ app.post('/api/chat', async (req, res) => {
       tasks.push({
         name: 'Claude',
         run: async function* () {
-          const claudePrompt = buildRoundPrompt(prompt, r, collected, 'Claude');
+          const claudePrompt = buildRoundPrompt(prompt, r, collected, 'Claude', isSerious);
           const stream = await streamAnthropic({ prompt: claudePrompt, language });
           if (!stream) return;
           for await (const chunk of chunksFromAnthropic(stream)) {
@@ -296,7 +323,7 @@ app.post('/api/chat', async (req, res) => {
       tasks.push({
         name: 'Gemini',
         run: async function* () {
-          const geminiPrompt = buildRoundPrompt(prompt, r, collected, 'Gemini');
+          const geminiPrompt = buildRoundPrompt(prompt, r, collected, 'Gemini', isSerious);
           const stream = await streamGemini({ prompt: geminiPrompt, language });
           if (!stream) return;
           for await (const chunk of chunksFromGemini(stream)) {
