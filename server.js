@@ -54,6 +54,19 @@ app.get('/api/stats', (_req, res) => {
   res.json({ ...stats });
 });
 
+app.get('/api/feedbacks', (_req, res) => {
+  try {
+    if (fs.existsSync('feedbacks.json')) {
+      const feedbacks = JSON.parse(fs.readFileSync('feedbacks.json', 'utf8'));
+      res.json({ feedbacks, count: feedbacks.length });
+    } else {
+      res.json({ feedbacks: [], count: 0 });
+    }
+  } catch (e) {
+    res.status(500).json({ error: 'Could not read feedbacks' });
+  }
+});
+
 app.post('/api/feedback', (req, res) => {
   stats.feedbacks += 1;
   console.log('[feedback]', JSON.stringify(req.body));
