@@ -219,8 +219,13 @@ app.post('/api/update-turns', (req, res) => {
     return res.status(404).json({ error: 'Device not found' });
   }
   
-  // Check for test bypass
-  const isBypass = hasTestBypass(deviceToken) || deviceInfo.platform === 'iOS'; // TEMP: All iOS devices bypass
+  // Check for test bypass - ENHANCED VERSION
+  const isTestBypass = hasTestBypass(deviceToken);
+  const isIOSBypass = deviceInfo.platform === 'iOS';
+  const isBypass = isTestBypass || isIOSBypass; // TEMP: All iOS devices bypass
+  
+  console.log('[bypass-check]', deviceToken.substring(0, 10) + '...', 
+              `Platform: ${deviceInfo.platform}, TestBypass: ${isTestBypass}, IOSBypass: ${isIOSBypass}, FinalBypass: ${isBypass}`);
   
   // Update device usage
   deviceInfo.totalTurnsUsed += turnsUsed;
