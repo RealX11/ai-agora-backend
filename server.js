@@ -140,12 +140,23 @@ async function* chunksFromGemini(stream) {
 }
 
 function buildRoundPrompt(basePrompt, round, allRoundResponses) {
-  if (round === 1) return basePrompt;
+  let prompt = basePrompt;
+  
+  // Tur bazlı talimatlar ekle
+  if (round === 1) {
+    prompt += "\n\n[İLK TUR TALİMATI]: Bu ilk tur. Henüz başka AI cevabı yok. Sadece soruya odaklan, direkt cevap ver. Önceki tur, önceki cevap, diğer AI'lar diye bir şey yok henüz.";
+  } else if (round === 2) {
+    prompt += "\n\n[İKİNCİ TUR TALİMATI]: İkinci turdasın. Diğer AI'ların (sadece diğerlerinin!) cevaplarına kısa, eğlenceli atıflar yap. KENDİ YAZDIĞIN CEVABI YOK SAY - sanki hiç yazmamışsın gibi davran. Sadece diğer AI'lardan bahset. Esprili ol, okuyucu tebessüm etsin!";
+  } else if (round === 3) {
+    prompt += "\n\n[ÜÇÜNCÜ TUR - CİDDİ ANALİZ]: Tamam, şakayı bir kenara bırakalım. Üç tur istediysen bu konuda ciddisin demektir! 😏 Diğer AI'ların önceki turlarındaki görüşlerini analiz et, zekice bir espri ile başla ama sonra işin derinlemesine git. Pratik çözümler, gerçek veriler, somut öneriler sun. Hem eğlenceli hem bilgilendirici ol - ama bu sefer gerçekten faydalı bir sonuç çıkar ortaya!";
+  }
+  
+  if (round === 1) return prompt;
   const prev = allRoundResponses
     .filter((r) => r.round < round)
     .map((r) => `- [${r.model}] ${r.text}`)
     .join('\n');
-  return `${basePrompt}\n\nOther models said previously:\n${prev}\n\nBriefly comment on agreements/disagreements and, if needed, refine your answer.`;
+  return `${prompt}\n\nOther models said previously:\n${prev}\n\nBriefly comment on agreements/disagreements and, if needed, refine your answer.`;
 }
 
 function moderatorPrompt(style, language, collected) {
