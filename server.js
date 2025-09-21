@@ -56,6 +56,8 @@ const deviceTurns = new Map();
 const testDeviceBypass = [
   // Add your device token prefix here (first 10 chars)
   // Example: "abc1234567"
+  "3581323991", // Murat's iPhone 16 Pro Max IMEI prefix (35 813239 918048 7)
+  "3581323991"  // Murat's iPhone 16 Pro Max IMEI2 prefix (35 813239 919727 5)
 ];
 
 // Function to check if device has test bypass
