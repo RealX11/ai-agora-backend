@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -56,6 +57,25 @@ app.get('/api/stats', (_req, res) => {
 app.post('/api/feedback', (req, res) => {
   stats.feedbacks += 1;
   console.log('[feedback]', JSON.stringify(req.body));
+  
+  // Save to file
+  const feedback = {
+    ...req.body,
+    timestamp: new Date().toISOString(),
+    id: Date.now()
+  };
+  
+  try {
+    let feedbacks = [];
+    if (fs.existsSync('feedbacks.json')) {
+      feedbacks = JSON.parse(fs.readFileSync('feedbacks.json', 'utf8'));
+    }
+    feedbacks.push(feedback);
+    fs.writeFileSync('feedbacks.json', JSON.stringify(feedbacks, null, 2));
+  } catch (e) {
+    console.error('[feedback] File write error:', e);
+  }
+  
   res.json({ ok: true });
 });
 
