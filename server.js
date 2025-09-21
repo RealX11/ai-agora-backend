@@ -218,7 +218,7 @@ app.post('/api/update-turns', (req, res) => {
   }
   
   // Check for test bypass
-  const isBypass = hasTestBypass(deviceToken);
+  const isBypass = hasTestBypass(deviceToken) || deviceInfo.platform === 'iOS'; // TEMP: All iOS devices bypass
   
   // Update device usage
   deviceInfo.totalTurnsUsed += turnsUsed;
@@ -231,7 +231,7 @@ app.post('/api/update-turns', (req, res) => {
     // Test device - give unlimited turns
     turnData.remaining = 999;
     console.log('[turns-update] TEST BYPASS:', deviceToken.substring(0, 10) + '...', 
-                `Used: ${turnsUsed}, Bypass: UNLIMITED`);
+                `Used: ${turnsUsed}, Bypass: UNLIMITED, Platform: ${deviceInfo.platform}`);
   } else {
     turnData.remaining = remainingTurns;
     console.log('[turns-update]', deviceToken.substring(0, 10) + '...', 
@@ -249,6 +249,7 @@ app.post('/api/update-turns', (req, res) => {
     turnsUsed,
     remainingTurns: isBypass ? 999 : remainingTurns,
     bypass: isBypass,
+    platform: deviceInfo.platform,
     timestamp: new Date().toISOString()
   };
   
