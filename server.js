@@ -52,6 +52,17 @@ const stats = {
 const deviceRegistry = new Map();
 const deviceTurns = new Map();
 
+// TEST BYPASS: Add your device token prefix here for unlimited turns
+const testDeviceBypass = [
+  // Add your device token prefix here (first 10 chars)
+  // Example: "abc1234567"
+];
+
+// Function to check if device has test bypass
+function hasTestBypass(deviceToken) {
+  return testDeviceBypass.some(prefix => deviceToken.startsWith(prefix));
+}
+
 // Load existing devices on startup
 function loadExistingDevices() {
   try {
@@ -87,6 +98,18 @@ app.get('/api/stats', (_req, res) => {
     totalDevices: deviceRegistry.size,
     totalActiveDevices: Array.from(deviceTurns.values()).filter(d => d.remaining > 0).length
   });
+});
+
+// DEBUG: List all devices (for testing only)
+app.get('/api/debug/devices', (_req, res) => {
+  const devices = Array.from(deviceRegistry.entries()).map(([token, info]) => ({
+    tokenPrefix: token.substring(0, 10) + '...',
+    platform: info.platform,
+    registeredAt: info.registeredAt,
+    totalTurnsUsed: info.totalTurnsUsed,
+    remaining: deviceTurns.get(token)?.remaining || 0
+  }));
+  res.json({ devices, count: devices.length });
 });
 
 app.get('/api/feedbacks', (_req, res) => {
@@ -194,26 +217,38 @@ app.post('/api/update-turns', (req, res) => {
     return res.status(404).json({ error: 'Device not found' });
   }
   
+  // Check for test bypass
+  const isBypass = hasTestBypass(deviceToken);
+  
   // Update device usage
   deviceInfo.totalTurnsUsed += turnsUsed;
   deviceInfo.lastUsed = new Date().toISOString();
   
   // Update turns tracking
   const turnData = deviceTurns.get(deviceToken) || { remaining: 0, subscription: false };
-  turnData.remaining = remainingTurns;
+  
+  if (isBypass) {
+    // Test device - give unlimited turns
+    turnData.remaining = 999;
+    console.log('[turns-update] TEST BYPASS:', deviceToken.substring(0, 10) + '...', 
+                `Used: ${turnsUsed}, Bypass: UNLIMITED`);
+  } else {
+    turnData.remaining = remainingTurns;
+    console.log('[turns-update]', deviceToken.substring(0, 10) + '...', 
+                `Used: ${turnsUsed}, Remaining: ${remainingTurns}`);
+  }
+  
   turnData.lastUpdate = timestamp || Date.now();
   deviceTurns.set(deviceToken, turnData);
   
   stats.turnUsage += turnsUsed;
   
-  console.log('[turns-update]', deviceToken.substring(0, 10) + '...', 
-              `Used: ${turnsUsed}, Remaining: ${remainingTurns}`);
-  
   // Save usage log
   const usageLog = {
     deviceToken: deviceToken.substring(0, 10) + '...',
     turnsUsed,
-    remainingTurns,
+    remainingTurns: isBypass ? 999 : remainingTurns,
+    bypass: isBypass,
     timestamp: new Date().toISOString()
   };
   
@@ -236,7 +271,8 @@ app.post('/api/update-turns', (req, res) => {
     success: true, 
     deviceInfo: {
       totalTurnsUsed: deviceInfo.totalTurnsUsed,
-      registeredAt: deviceInfo.registeredAt
+      registeredAt: deviceInfo.registeredAt,
+      bypass: isBypass
     }
   });
 });
