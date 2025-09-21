@@ -126,9 +126,16 @@ async function streamGemini({ prompt, language }) {
 }
 
 async function* chunksFromGemini(stream) {
+  let soFar = '';
   for await (const item of stream.stream) {
     const t = item?.text();
-    if (t) yield t;
+    if (!t) continue;
+    let delta = t;
+    if (t.startsWith(soFar)) {
+      delta = t.slice(soFar.length);
+    }
+    soFar = t;
+    if (delta) yield delta;
   }
 }
 
@@ -262,11 +269,11 @@ app.post('/api/chat', async (req, res) => {
         })
       );
 
-      // Push full messages for this round
+      // Push finalize signal without re-sending full text (avoid duplication)
       for (const [model, text] of buffers.entries()) {
         if (text) {
           collected.push({ model, round: r, text });
-          sseSend(res, 'message', { model, round: r, text });
+          sseSend(res, 'message', { model, round: r, text: '' });
         }
       }
 
@@ -307,7 +314,7 @@ app.post('/api/chat', async (req, res) => {
     modBuf += chunk;
     sseSend(res, 'moderator_chunk', { text: chunk });
   }
-  if (modBuf) sseSend(res, 'moderator_message', { text: modBuf });
+  if (modBuf) sseSend(res, 'moderator_message', { text: '' });
 
   stats.chats += 1;
   sseDone(res);
