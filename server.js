@@ -139,7 +139,7 @@ async function* chunksFromGemini(stream) {
   }
 }
 
-function buildRoundPrompt(basePrompt, round, allRoundResponses) {
+function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = null) {
   let prompt = basePrompt;
   
   // Tur bazlı talimatlar ekle
@@ -153,7 +153,7 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses) {
   
   if (round === 1) return prompt;
   const prev = allRoundResponses
-    .filter((r) => r.round < round)
+    .filter((r) => r.round < round && r.model !== currentModel)
     .map((r) => `- [${r.model}] ${r.text}`)
     .join('\n');
   return `${prompt}\n\nOther models said previously:\n${prev}\n\nBriefly comment on agreements/disagreements and, if needed, refine your answer.`;
@@ -215,15 +215,14 @@ app.post('/api/chat', async (req, res) => {
   for (let r = 1; r <= Math.max(1, Math.min(3, rounds)); r++) {
     sseSend(res, 'round', { round: r, message: r === 1 ? 'Round 1 starting…' : `Round ${r} starting…` });
 
-    const roundPrompt = buildRoundPrompt(prompt, r, collected);
-
     const tasks = [];
 
     if (active.includes('GPT')) {
       tasks.push({
         name: 'GPT',
         run: async function* () {
-          const stream = await streamOpenAI({ prompt: roundPrompt, language });
+          const gptPrompt = buildRoundPrompt(prompt, r, collected, 'GPT');
+          const stream = await streamOpenAI({ prompt: gptPrompt, language });
           if (!stream) return;
           for await (const chunk of chunksFromOpenAI(stream)) {
             yield { model: 'GPT', round: r, chunk };
@@ -236,7 +235,8 @@ app.post('/api/chat', async (req, res) => {
       tasks.push({
         name: 'Claude',
         run: async function* () {
-          const stream = await streamAnthropic({ prompt: roundPrompt, language });
+          const claudePrompt = buildRoundPrompt(prompt, r, collected, 'Claude');
+          const stream = await streamAnthropic({ prompt: claudePrompt, language });
           if (!stream) return;
           for await (const chunk of chunksFromAnthropic(stream)) {
             yield { model: 'Claude', round: r, chunk };
@@ -249,7 +249,8 @@ app.post('/api/chat', async (req, res) => {
       tasks.push({
         name: 'Gemini',
         run: async function* () {
-          const stream = await streamGemini({ prompt: roundPrompt, language });
+          const geminiPrompt = buildRoundPrompt(prompt, r, collected, 'Gemini');
+          const stream = await streamGemini({ prompt: geminiPrompt, language });
           if (!stream) return;
           for await (const chunk of chunksFromGemini(stream)) {
             yield { model: 'Gemini', round: r, chunk };
