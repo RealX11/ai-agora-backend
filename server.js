@@ -142,13 +142,13 @@ async function* chunksFromGemini(stream) {
 function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = null) {
   let prompt = basePrompt;
   
-  // Tur bazlı talimatlar ekle
+  // Round-based instructions
   if (round === 1) {
-    prompt += "\n\n[İLK TUR TALİMATI]: Bu ilk tur. Henüz başka AI cevabı yok. Sadece soruya odaklan, direkt cevap ver. Önceki tur, önceki cevap, diğer AI'lar diye bir şey yok henüz.";
+    prompt += "\n\n[ROUND 1 INSTRUCTION]: This is the first round. No other AI responses exist yet. Focus only on the question and give a direct answer. Don't mention previous rounds, previous responses, or other AIs.";
   } else if (round === 2) {
-    prompt += "\n\n[İKİNCİ TUR TALİMATI]: İkinci turdasın. Diğer AI'ların (sadece diğerlerinin!) cevaplarına kısa, eğlenceli atıflar yap. KENDİ YAZDIĞIN CEVABI YOK SAY - sanki hiç yazmamışsın gibi davran. Sadece diğer AI'lardan bahset. Esprili ol, okuyucu tebessüm etsin!";
+    prompt += "\n\n[ROUND 2 INSTRUCTION]: This is the second round. Reference other AIs' responses (not your own!) with brief, playful references. IGNORE YOUR OWN PREVIOUS RESPONSE - act as if you never wrote it. Only mention other AIs. Be witty and make the reader smile!";
   } else if (round === 3) {
-    prompt += "\n\n[ÜÇÜNCÜ TUR - CİDDİ ANALİZ]: Tamam, şakayı bir kenara bırakalım. Üç tur istediysen bu konuda ciddisin demektir! 😏 Diğer AI'ların önceki turlarındaki görüşlerini analiz et, zekice bir espri ile başla ama sonra işin derinlemesine git. Pratik çözümler, gerçek veriler, somut öneriler sun. Hem eğlenceli hem bilgilendirici ol - ama bu sefer gerçekten faydalı bir sonuç çıkar ortaya!";
+    prompt += "\n\n[ROUND 3 - SERIOUS ANALYSIS]: Alright, let's get serious. If you requested three rounds, you must be serious about this topic! 😏 Analyze other AIs' previous responses, start with a clever quip but then dive deep. Provide practical solutions, real data, concrete suggestions. Be both entertaining and informative - but this time deliver genuinely useful results!";
   }
   
   if (round === 1) return prompt;
@@ -159,20 +159,34 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = n
   return `${prompt}\n\nOther models said previously:\n${prev}\n\nBriefly comment on agreements/disagreements and, if needed, refine your answer.`;
 }
 
-function moderatorPrompt(style, language, collected) {
+function moderatorPrompt(style, language, collected, rounds = 1) {
+  // For 3 rounds, use serious analysis mode regardless of style
+  const actualStyle = rounds >= 3 ? 'analytical' : style;
+  
   const styleGuidance = {
     neutral: 'Balanced and concise final answer.',
     analytical: 'Compare and contrast key points analytically.',
     educational: 'Explain clearly with simple examples if useful.',
     creative: 'Provide an engaging, creative synthesis.',
     'quick-summary': 'Provide a terse executive summary.',
-  }[style] || 'Balanced and concise final answer.';
+  }[actualStyle] || 'Balanced and concise final answer.';
 
   const lines = collected
     .map((c) => `- [${c.model} R${c.round}] ${c.text}`)
     .join('\n');
 
-  return `Act as a moderator. Language: ${language}.\n${styleGuidance}\nSynthesize the following model responses into a single, helpful answer.\n\n${lines}`;
+  // Personalized intro for 3-round conversations
+  const personalizedIntro = rounds >= 3 
+    ? (language === 'Turkish' || language === 'Türkçe' 
+        ? "Üç tur seçtiğine göre bu konuya epey ciddi yaklaşıyorsun, peki o zaman..." 
+        : "Since you chose three rounds, you're quite serious about this topic, well then...")
+    : "";
+
+  const basePrompt = `Act as a moderator. Language: ${language}.\n${styleGuidance}\nSynthesize the following model responses into a single, helpful answer.`;
+  
+  return personalizedIntro 
+    ? `${basePrompt}\n\n${personalizedIntro}\n\n${lines}`
+    : `${basePrompt}\n\n${lines}`;
 }
 
 // SSE Chat endpoint
@@ -294,7 +308,7 @@ app.post('/api/chat', async (req, res) => {
   }
 
   // Moderator step
-  const modPrompt = moderatorPrompt(moderatorStyle, language, collected);
+  const modPrompt = moderatorPrompt(moderatorStyle, language, collected, rounds);
 
   async function* moderatorRun() {
     if (moderatorEngine === 'GPT' && openai) {
