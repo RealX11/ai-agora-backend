@@ -44,14 +44,49 @@ const stats = {
   requests: 0,
   chats: 0,
   feedbacks: 0,
+  registeredDevices: 0,
+  turnUsage: 0,
 };
+
+// In-memory device storage (in production, use database)
+const deviceRegistry = new Map();
+const deviceTurns = new Map();
+
+// Load existing devices on startup
+function loadExistingDevices() {
+  try {
+    if (fs.existsSync('devices.json')) {
+      const devices = JSON.parse(fs.readFileSync('devices.json', 'utf8'));
+      devices.forEach(device => {
+        deviceRegistry.set(device.deviceToken, device);
+        // Set default turns if not exists
+        if (!deviceTurns.has(device.deviceToken)) {
+          deviceTurns.set(device.deviceToken, { 
+            remaining: device.subscription ? 200 : 8, 
+            subscription: device.subscription || false 
+          });
+        }
+      });
+      console.log(`[startup] Loaded ${devices.length} existing devices`);
+    }
+  } catch (e) {
+    console.error('[startup] Error loading devices:', e);
+  }
+}
+
+// Load devices on startup
+loadExistingDevices();
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
 app.get('/api/stats', (_req, res) => {
-  res.json({ ...stats });
+  res.json({ 
+    ...stats,
+    totalDevices: deviceRegistry.size,
+    totalActiveDevices: Array.from(deviceTurns.values()).filter(d => d.remaining > 0).length
+  });
 });
 
 app.get('/api/feedbacks', (_req, res) => {
@@ -90,6 +125,120 @@ app.post('/api/feedback', (req, res) => {
   }
   
   res.json({ ok: true });
+});
+
+// Device registration endpoint
+app.post('/api/register-device', (req, res) => {
+  const { deviceToken, firstInstall, platform, version } = req.body;
+  
+  if (!deviceToken) {
+    return res.status(400).json({ error: 'Device token required' });
+  }
+  
+  // Check if device already exists
+  if (deviceRegistry.has(deviceToken)) {
+    return res.json({ 
+      exists: true, 
+      message: 'Device already registered',
+      registrationDate: deviceRegistry.get(deviceToken).firstInstall
+    });
+  }
+  
+  // Register new device
+  const deviceInfo = {
+    deviceToken,
+    firstInstall: firstInstall || Date.now(),
+    platform: platform || 'unknown',
+    version: version || '1.0',
+    registeredAt: new Date().toISOString(),
+    totalTurnsUsed: 0
+  };
+  
+  deviceRegistry.set(deviceToken, deviceInfo);
+  deviceTurns.set(deviceToken, { remaining: 8, subscription: false }); // 8 free turns
+  
+  stats.registeredDevices += 1;
+  
+  console.log('[device-register]', deviceToken.substring(0, 10) + '...', platform);
+  
+  // Save to file for persistence
+  try {
+    let devices = [];
+    if (fs.existsSync('devices.json')) {
+      devices = JSON.parse(fs.readFileSync('devices.json', 'utf8'));
+    }
+    devices.push(deviceInfo);
+    fs.writeFileSync('devices.json', JSON.stringify(devices, null, 2));
+  } catch (e) {
+    console.error('[device-register] File write error:', e);
+  }
+  
+  res.json({ 
+    success: true, 
+    message: 'Device registered successfully',
+    freeTurns: 8
+  });
+});
+
+// Update turns endpoint
+app.post('/api/update-turns', (req, res) => {
+  const { deviceToken, turnsUsed, remainingTurns, timestamp } = req.body;
+  
+  if (!deviceToken || typeof turnsUsed !== 'number') {
+    return res.status(400).json({ error: 'Invalid request data' });
+  }
+  
+  // Get device info
+  const deviceInfo = deviceRegistry.get(deviceToken);
+  if (!deviceInfo) {
+    return res.status(404).json({ error: 'Device not found' });
+  }
+  
+  // Update device usage
+  deviceInfo.totalTurnsUsed += turnsUsed;
+  deviceInfo.lastUsed = new Date().toISOString();
+  
+  // Update turns tracking
+  const turnData = deviceTurns.get(deviceToken) || { remaining: 0, subscription: false };
+  turnData.remaining = remainingTurns;
+  turnData.lastUpdate = timestamp || Date.now();
+  deviceTurns.set(deviceToken, turnData);
+  
+  stats.turnUsage += turnsUsed;
+  
+  console.log('[turns-update]', deviceToken.substring(0, 10) + '...', 
+              `Used: ${turnsUsed}, Remaining: ${remainingTurns}`);
+  
+  // Save usage log
+  const usageLog = {
+    deviceToken: deviceToken.substring(0, 10) + '...',
+    turnsUsed,
+    remainingTurns,
+    timestamp: new Date().toISOString()
+  };
+  
+  try {
+    let usageLogs = [];
+    if (fs.existsSync('usage.json')) {
+      usageLogs = JSON.parse(fs.readFileSync('usage.json', 'utf8'));
+    }
+    usageLogs.push(usageLog);
+    // Keep only last 1000 entries
+    if (usageLogs.length > 1000) {
+      usageLogs = usageLogs.slice(-1000);
+    }
+    fs.writeFileSync('usage.json', JSON.stringify(usageLogs, null, 2));
+  } catch (e) {
+    console.error('[turns-update] File write error:', e);
+  }
+  
+  res.json({ 
+    success: true, 
+    deviceInfo: {
+      totalTurnsUsed: deviceInfo.totalTurnsUsed,
+      registeredAt: deviceInfo.registeredAt
+    }
+  });
 });
 
 function sseHeaders(res) {
