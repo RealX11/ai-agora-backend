@@ -130,17 +130,17 @@ function detectSeriousTopic(prompt) {
 // Provider streaming helpers
 async function streamOpenAI({ prompt, language, round = 1 }) {
   if (!openai) return;
-  const maxTokens = round === 1 ? 200 : round === 2 ? 400 : 800;
+  const maxTokens = round === 1 ? 150 : round === 2 ? 250 : 600;
   const roundInstruction = round === 1 
-    ? "Keep response under 150 words. Be brief and direct." 
+    ? "Keep response under 100 words. Be very brief and direct. Maximum 2-3 short sentences per point." 
     : round === 2 
-    ? "Keep response under 300 words. Reference other AIs briefly." 
-    : "Provide comprehensive analysis. Up to 500 words allowed.";
+    ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
+    : "Provide comprehensive analysis. Up to 400 words allowed.";
   
   const stream = await openai.chat.completions.create({
     model: OPENAI_CHAT_MODEL,
     messages: [
-      { role: 'system', content: `You answer in ${language}. ${roundInstruction}` },
+      { role: 'system', content: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.` },
       { role: 'user', content: prompt },
     ],
     max_tokens: maxTokens,
@@ -158,17 +158,17 @@ async function* chunksFromOpenAI(stream) {
 
 async function streamAnthropic({ prompt, language, round = 1 }) {
   if (!anthropic) return;
-  const maxTokens = round === 1 ? 200 : round === 2 ? 400 : 800;
+  const maxTokens = round === 1 ? 150 : round === 2 ? 250 : 600;
   const roundInstruction = round === 1 
-    ? "Keep response under 150 words. Be brief and direct." 
+    ? "Keep response under 100 words. Be very brief and direct. Maximum 2-3 short sentences per point." 
     : round === 2 
-    ? "Keep response under 300 words. Reference other AIs briefly." 
-    : "Provide comprehensive analysis. Up to 500 words allowed.";
+    ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
+    : "Provide comprehensive analysis. Up to 400 words allowed.";
     
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
     max_tokens: maxTokens,
-    system: `You answer in ${language}. ${roundInstruction}`,
+    system: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
   return stream;
@@ -187,12 +187,12 @@ async function* chunksFromAnthropic(stream) {
 async function streamGemini({ prompt, language, round = 1 }) {
   if (!genAI) return;
   const roundInstruction = round === 1 
-    ? "Keep response under 150 words. Be brief and direct." 
+    ? "Keep response under 100 words. Be very brief and direct. Maximum 2-3 short sentences per point." 
     : round === 2 
-    ? "Keep response under 300 words. Reference other AIs briefly." 
-    : "Provide comprehensive analysis. Up to 500 words allowed.";
+    ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
+    : "Provide comprehensive analysis. Up to 400 words allowed.";
     
-  const systemInstruction = `You answer in ${language}. ${roundInstruction}`;
+  const systemInstruction = `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`;
   const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction });
   const result = await model.generateContentStream(prompt);
   return result;
