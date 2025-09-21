@@ -128,14 +128,16 @@ function detectSeriousTopic(prompt) {
 }
 
 // Provider streaming helpers
-async function streamOpenAI({ prompt, language }) {
+async function streamOpenAI({ prompt, language, round = 1 }) {
   if (!openai) return;
+  const maxTokens = round === 1 ? 300 : round === 2 ? 600 : 1000;
   const stream = await openai.chat.completions.create({
     model: OPENAI_CHAT_MODEL,
     messages: [
-      { role: 'system', content: `You answer in ${language}. Keep responses concise.` },
+      { role: 'system', content: `You answer in ${language}. Keep responses ${round === 1 ? 'brief and concise' : round === 2 ? 'moderately detailed' : 'comprehensive and detailed'}.` },
       { role: 'user', content: prompt },
     ],
+    max_tokens: maxTokens,
     stream: true,
   });
   return stream;
@@ -148,12 +150,13 @@ async function* chunksFromOpenAI(stream) {
   }
 }
 
-async function streamAnthropic({ prompt, language }) {
+async function streamAnthropic({ prompt, language, round = 1 }) {
   if (!anthropic) return;
+  const maxTokens = round === 1 ? 300 : round === 2 ? 600 : 1000;
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
-    max_tokens: 1024,
-    system: `You answer in ${language}. Keep responses concise.`,
+    max_tokens: maxTokens,
+    system: `You answer in ${language}. Keep responses ${round === 1 ? 'brief and concise' : round === 2 ? 'moderately detailed' : 'comprehensive and detailed'}.`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
   return stream;
@@ -169,9 +172,10 @@ async function* chunksFromAnthropic(stream) {
   }
 }
 
-async function streamGemini({ prompt, language }) {
+async function streamGemini({ prompt, language, round = 1 }) {
   if (!genAI) return;
-  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: `You answer in ${language}. Keep responses concise.` });
+  const systemInstruction = `You answer in ${language}. Keep responses ${round === 1 ? 'brief and concise' : round === 2 ? 'moderately detailed' : 'comprehensive and detailed'}.`;
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction });
   const result = await model.generateContentStream(prompt);
   return result;
 }
@@ -296,7 +300,7 @@ app.post('/api/chat', async (req, res) => {
         name: 'GPT',
         run: async function* () {
           const gptPrompt = buildRoundPrompt(prompt, r, collected, 'GPT', isSerious);
-          const stream = await streamOpenAI({ prompt: gptPrompt, language });
+          const stream = await streamOpenAI({ prompt: gptPrompt, language, round: r });
           if (!stream) return;
           for await (const chunk of chunksFromOpenAI(stream)) {
             yield { model: 'GPT', round: r, chunk };
@@ -310,7 +314,7 @@ app.post('/api/chat', async (req, res) => {
         name: 'Claude',
         run: async function* () {
           const claudePrompt = buildRoundPrompt(prompt, r, collected, 'Claude', isSerious);
-          const stream = await streamAnthropic({ prompt: claudePrompt, language });
+          const stream = await streamAnthropic({ prompt: claudePrompt, language, round: r });
           if (!stream) return;
           for await (const chunk of chunksFromAnthropic(stream)) {
             yield { model: 'Claude', round: r, chunk };
@@ -324,7 +328,7 @@ app.post('/api/chat', async (req, res) => {
         name: 'Gemini',
         run: async function* () {
           const geminiPrompt = buildRoundPrompt(prompt, r, collected, 'Gemini', isSerious);
-          const stream = await streamGemini({ prompt: geminiPrompt, language });
+          const stream = await streamGemini({ prompt: geminiPrompt, language, round: r });
           if (!stream) return;
           for await (const chunk of chunksFromGemini(stream)) {
             yield { model: 'Gemini', round: r, chunk };
@@ -372,22 +376,22 @@ app.post('/api/chat', async (req, res) => {
 
   async function* moderatorRun() {
     if (moderatorEngine === 'GPT' && openai) {
-      const s = await streamOpenAI({ prompt: modPrompt, language });
+      const s = await streamOpenAI({ prompt: modPrompt, language, round: rounds });
       for await (const c of chunksFromOpenAI(s)) yield c;
       return;
     }
     if (moderatorEngine === 'Claude' && anthropic) {
-      const s = await streamAnthropic({ prompt: modPrompt, language });
+      const s = await streamAnthropic({ prompt: modPrompt, language, round: rounds });
       for await (const c of chunksFromAnthropic(s)) yield c;
       return;
     }
     if (moderatorEngine === 'Gemini' && genAI) {
-      const s = await streamGemini({ prompt: modPrompt, language });
+      const s = await streamGemini({ prompt: modPrompt, language, round: rounds });
       for await (const c of chunksFromGemini(s)) yield c;
       return;
     }
     if (openai) {
-      const s = await streamOpenAI({ prompt: modPrompt, language });
+      const s = await streamOpenAI({ prompt: modPrompt, language, round: rounds });
       for await (const c of chunksFromOpenAI(s)) yield c;
       return;
     }
