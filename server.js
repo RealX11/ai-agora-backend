@@ -6,8 +6,6 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const PORT = process.env.PORT || 3000;
-
 // Load env
 dotenv.config();
 
@@ -21,7 +19,9 @@ if (missing.length) {
 // Constants per spec
 export const OPENAI_CHAT_MODEL = 'gpt-4o';
 export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-export const GEMINI_MODEL = 'gemini-2.5-pro';
+export const GEMINI_MODEL = 'gemini-2.5-flash';
+
+const PORT = process.env.PORT || 3000;
 
 // Clients
 const openai = process.env.OPENAI_API_KEY
@@ -44,74 +44,14 @@ const stats = {
   requests: 0,
   chats: 0,
   feedbacks: 0,
-  registeredDevices: 0,
-  turnUsage: 0,
 };
-
-// In-memory device storage (in production, use database)
-const deviceRegistry = new Map();
-const deviceTurns = new Map();
-
-// TEST BYPASS: Add your device token prefix here for unlimited turns
-const testDeviceBypass = [
-  // Add your device token prefix here (first 10 chars)
-  // Example: "abc1234567"
-  "3581323991", // Murat's iPhone 16 Pro Max IMEI prefix (35 813239 918048 7)
-  "3581323991"  // Murat's iPhone 16 Pro Max IMEI2 prefix (35 813239 919727 5)
-];
-
-// Function to check if device has test bypass
-function hasTestBypass(deviceToken) {
-  return testDeviceBypass.some(prefix => deviceToken.startsWith(prefix));
-}
-
-// Load existing devices on startup
-function loadExistingDevices() {
-  try {
-    if (fs.existsSync('devices.json')) {
-      const devices = JSON.parse(fs.readFileSync('devices.json', 'utf8'));
-      devices.forEach(device => {
-        deviceRegistry.set(device.deviceToken, device);
-        // Set default turns if not exists
-        if (!deviceTurns.has(device.deviceToken)) {
-          deviceTurns.set(device.deviceToken, { 
-            remaining: device.subscription ? 200 : 8, 
-            subscription: device.subscription || false 
-          });
-        }
-      });
-      console.log(`[startup] Loaded ${devices.length} existing devices`);
-    }
-  } catch (e) {
-    console.error('[startup] Error loading devices:', e);
-  }
-}
-
-// Load devices on startup
-loadExistingDevices();
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
 app.get('/api/stats', (_req, res) => {
-  res.json({ 
-    ...stats,
-    totalDevices: deviceRegistry.size,
-    totalActiveDevices: Array.from(deviceTurns.values()).filter(d => d.remaining > 0).length
-  });
-});
-
-// DEBUG: List all devices (for testing only)
-app.get('/api/debug/devices', (_req, res) => {
-  const devices = Array.from(deviceRegistry.entries()).map(([token, info]) => ({
-    tokenPrefix: token.substring(0, 10) + '...',
-    platform: info.platform,
-    registeredAt: info.registeredAt,
-    totalTurnsUsed: info.totalTurnsUsed,
-    remaining: deviceTurns.get(token)?.remaining || 0
-  }));
-  res.json({ devices, count: devices.length });
+  res.json({ ...stats });
 });
 
 app.get('/api/feedbacks', (_req, res) => {
@@ -152,140 +92,6 @@ app.post('/api/feedback', (req, res) => {
   res.json({ ok: true });
 });
 
-// Device registration endpoint
-app.post('/api/register-device', (req, res) => {
-  const { deviceToken, firstInstall, platform, version } = req.body;
-  
-  if (!deviceToken) {
-    return res.status(400).json({ error: 'Device token required' });
-  }
-  
-  // Check if device already exists
-  if (deviceRegistry.has(deviceToken)) {
-    return res.json({ 
-      exists: true, 
-      message: 'Device already registered',
-      registrationDate: deviceRegistry.get(deviceToken).firstInstall
-    });
-  }
-  
-  // Register new device
-  const deviceInfo = {
-    deviceToken,
-    firstInstall: firstInstall || Date.now(),
-    platform: platform || 'unknown',
-    version: version || '1.0',
-    registeredAt: new Date().toISOString(),
-    totalTurnsUsed: 0
-  };
-  
-  deviceRegistry.set(deviceToken, deviceInfo);
-  deviceTurns.set(deviceToken, { remaining: 8, subscription: false }); // 8 free turns
-  
-  stats.registeredDevices += 1;
-  
-  console.log('[device-register]', deviceToken.substring(0, 10) + '...', platform);
-  
-  // Save to file for persistence
-  try {
-    let devices = [];
-    if (fs.existsSync('devices.json')) {
-      devices = JSON.parse(fs.readFileSync('devices.json', 'utf8'));
-    }
-    devices.push(deviceInfo);
-    fs.writeFileSync('devices.json', JSON.stringify(devices, null, 2));
-  } catch (e) {
-    console.error('[device-register] File write error:', e);
-  }
-  
-  res.json({ 
-    success: true, 
-    message: 'Device registered successfully',
-    freeTurns: 8
-  });
-});
-
-// Update turns endpoint
-app.post('/api/update-turns', (req, res) => {
-  const { deviceToken, turnsUsed, remainingTurns, timestamp } = req.body;
-  
-  if (!deviceToken || typeof turnsUsed !== 'number') {
-    return res.status(400).json({ error: 'Invalid request data' });
-  }
-  
-  // Get device info
-  const deviceInfo = deviceRegistry.get(deviceToken);
-  if (!deviceInfo) {
-    return res.status(404).json({ error: 'Device not found' });
-  }
-  
-  // Check for test bypass - ENHANCED VERSION  
-  const isTestBypass = hasTestBypass(deviceToken);
-  const isIOSBypass = deviceInfo.platform === 'iOS';
-  const isUnlimitedMode = true; // TEMP: Everyone gets unlimited for testing
-  const isBypass = isTestBypass || isIOSBypass || isUnlimitedMode;
-  
-  console.log('[bypass-check]', deviceToken.substring(0, 10) + '...', 
-              `Platform: ${deviceInfo.platform}, TestBypass: ${isTestBypass}, IOSBypass: ${isIOSBypass}, UnlimitedMode: ${isUnlimitedMode}, FinalBypass: ${isBypass}`);
-  
-  // Update device usage
-  deviceInfo.totalTurnsUsed += turnsUsed;
-  deviceInfo.lastUsed = new Date().toISOString();
-  
-  // Update turns tracking
-  const turnData = deviceTurns.get(deviceToken) || { remaining: 0, subscription: false };
-  
-  if (isBypass) {
-    // Test device - give unlimited turns
-    turnData.remaining = 999;
-    console.log('[turns-update] TEST BYPASS:', deviceToken.substring(0, 10) + '...', 
-                `Used: ${turnsUsed}, Bypass: UNLIMITED, Platform: ${deviceInfo.platform}`);
-  } else {
-    turnData.remaining = remainingTurns;
-    console.log('[turns-update]', deviceToken.substring(0, 10) + '...', 
-                `Used: ${turnsUsed}, Remaining: ${remainingTurns}`);
-  }
-  
-  turnData.lastUpdate = timestamp || Date.now();
-  deviceTurns.set(deviceToken, turnData);
-  
-  stats.turnUsage += turnsUsed;
-  
-  // Save usage log
-  const usageLog = {
-    deviceToken: deviceToken.substring(0, 10) + '...',
-    turnsUsed,
-    remainingTurns: isBypass ? 999 : remainingTurns,
-    bypass: isBypass,
-    platform: deviceInfo.platform,
-    timestamp: new Date().toISOString()
-  };
-  
-  try {
-    let usageLogs = [];
-    if (fs.existsSync('usage.json')) {
-      usageLogs = JSON.parse(fs.readFileSync('usage.json', 'utf8'));
-    }
-    usageLogs.push(usageLog);
-    // Keep only last 1000 entries
-    if (usageLogs.length > 1000) {
-      usageLogs = usageLogs.slice(-1000);
-    }
-    fs.writeFileSync('usage.json', JSON.stringify(usageLogs, null, 2));
-  } catch (e) {
-    console.error('[turns-update] File write error:', e);
-  }
-  
-  res.json({ 
-    success: true, 
-    deviceInfo: {
-      totalTurnsUsed: deviceInfo.totalTurnsUsed,
-      registeredAt: deviceInfo.registeredAt,
-      bypass: isBypass
-    }
-  });
-});
-
 function sseHeaders(res) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -324,11 +130,12 @@ function detectSeriousTopic(prompt) {
 // Provider streaming helpers
 async function streamOpenAI({ prompt, language, round = 1 }) {
   if (!openai) return;
+  const maxTokens = round === 1 ? 150 : round === 2 ? 250 : 600;
   const roundInstruction = round === 1 
-    ? "STRICT WORD LIMIT: Maximum 100 words. Be very brief and direct. Use 2-3 short sentences per point." 
+    ? "Keep response under 100 words. Be very brief and direct. Maximum 2-3 short sentences per point." 
     : round === 2 
-    ? "STRICT WORD LIMIT: Maximum 200 words. Be concise. Briefly reference other AIs (1-2 sentences only)." 
-    : "STRICT WORD LIMIT: Maximum 400 words. Provide a comprehensive analysis with clear insights.";
+    ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
+    : "Provide comprehensive analysis. Up to 400 words allowed.";
   
   const stream = await openai.chat.completions.create({
     model: OPENAI_CHAT_MODEL,
@@ -336,6 +143,7 @@ async function streamOpenAI({ prompt, language, round = 1 }) {
       { role: 'system', content: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.` },
       { role: 'user', content: prompt },
     ],
+    max_tokens: maxTokens,
     stream: true,
   });
   return stream;
@@ -350,14 +158,16 @@ async function* chunksFromOpenAI(stream) {
 
 async function streamAnthropic({ prompt, language, round = 1 }) {
   if (!anthropic) return;
+  const maxTokens = round === 1 ? 150 : round === 2 ? 250 : 600;
   const roundInstruction = round === 1 
-    ? "STRICT WORD LIMIT: Maximum 100 words. Be very brief and direct. Use 2-3 short sentences per point." 
+    ? "Keep response under 100 words. Be very brief and direct. Maximum 2-3 short sentences per point." 
     : round === 2 
-    ? "STRICT WORD LIMIT: Maximum 200 words. Be concise. Briefly reference other AIs (1-2 sentences only)." 
-    : "STRICT WORD LIMIT: Maximum 400 words. Provide a comprehensive analysis with clear insights.";
+    ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
+    : "Provide comprehensive analysis. Up to 400 words allowed.";
     
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
+    max_tokens: maxTokens,
     system: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
@@ -377,10 +187,10 @@ async function* chunksFromAnthropic(stream) {
 async function streamGemini({ prompt, language, round = 1 }) {
   if (!genAI) return;
   const roundInstruction = round === 1 
-    ? "STRICT WORD LIMIT: Maximum 100 words. Be very brief and direct. Use 2-3 short sentences per point." 
+    ? "Keep response under 100 words. Be very brief and direct. Maximum 2-3 short sentences per point." 
     : round === 2 
-    ? "STRICT WORD LIMIT: Maximum 200 words. Be concise. Briefly reference other AIs (1-2 sentences only)." 
-    : "STRICT WORD LIMIT: Maximum 400 words. Provide a comprehensive analysis with clear insights.";
+    ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
+    : "Provide comprehensive analysis. Up to 400 words allowed.";
     
   const systemInstruction = `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`;
   const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction });
