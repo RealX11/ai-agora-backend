@@ -164,6 +164,7 @@ async function streamAnthropic({ prompt, language, round = 1 }) {
     
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
+    max_tokens: 4096,
     system: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
