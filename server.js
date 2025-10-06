@@ -130,9 +130,8 @@ function detectSeriousTopic(prompt) {
 // Provider streaming helpers
 async function streamOpenAI({ prompt, language, round = 1 }) {
   if (!openai) return;
-  const maxTokens = round === 1 ? 150 : round === 2 ? 250 : 600;
   const roundInstruction = round === 1 
-    ? "Keep response under 100 words. Be very brief and direct. Maximum 2-3 short sentences per point." 
+    ? "Provide a short and concise answer." 
     : round === 2 
     ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
@@ -143,7 +142,6 @@ async function streamOpenAI({ prompt, language, round = 1 }) {
       { role: 'system', content: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.` },
       { role: 'user', content: prompt },
     ],
-    max_tokens: maxTokens,
     stream: true,
   });
   return stream;
@@ -158,16 +156,14 @@ async function* chunksFromOpenAI(stream) {
 
 async function streamAnthropic({ prompt, language, round = 1 }) {
   if (!anthropic) return;
-  const maxTokens = round === 1 ? 150 : round === 2 ? 250 : 600;
   const roundInstruction = round === 1 
-    ? "Keep response under 100 words. Be very brief and direct. Maximum 2-3 short sentences per point." 
+    ? "Provide a short and concise answer." 
     : round === 2 
     ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
     
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
-    max_tokens: maxTokens,
     system: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
@@ -187,7 +183,7 @@ async function* chunksFromAnthropic(stream) {
 async function streamGemini({ prompt, language, round = 1 }) {
   if (!genAI) return;
   const roundInstruction = round === 1 
-    ? "Keep response under 100 words. Be very brief and direct. Maximum 2-3 short sentences per point." 
+    ? "Provide a short and concise answer." 
     : round === 2 
     ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
@@ -219,7 +215,7 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = n
   if (round === 1) {
     prompt += isSerious 
       ? "\n\n[ROUND 1 INSTRUCTION]: This appears to be a serious topic. Provide direct, helpful, and empathetic responses without playful elements."
-      : "\n\n[ROUND 1 INSTRUCTION]: This is the first round. No other AI responses exist yet. Focus only on the question and give a direct answer. Don't mention previous rounds, previous responses, or other AIs.";
+      : "\n\n[ROUND 1 INSTRUCTION]: Provide a short and concise answer.";
   } else if (round === 2) {
     prompt += isSerious
       ? "\n\n[ROUND 2 INSTRUCTION]: Reference other AIs' responses professionally. Be thorough, supportive, and provide helpful information."
