@@ -5,6 +5,9 @@ import fs from 'fs';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import sqlite3 from 'sqlite3';
+import jwt from 'jsonwebtoken';
+import jwksRsa from 'jwks-rsa';
 
 // Load env
 dotenv.config();
@@ -38,6 +41,27 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
+// Initialize SQLite database
+const db = new sqlite3.Database('users.db', (err) => {
+  if (err) {
+    console.error('Could not connect to database:', err);
+  } else {
+    console.log('Connected to SQLite database');
+    db.run(`CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT UNIQUE NOT NULL,
+      turns_remaining INTEGER DEFAULT 20,
+      subscription_expires INTEGER DEFAULT 0,
+      created_at INTEGER DEFAULT (strftime('%s', 'now'))
+    )`);
+  }
+});
+
+// Apple JWKS client
+const appleJwksClient = jwksRsa({
+  jwksUri: 'https://appleid.apple.com/auth/keys'
+});
+
 // Simple in-memory stats
 const stats = {
   startedAt: new Date().toISOString(),
@@ -48,6 +72,122 @@ const stats = {
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+// Apple Sign In endpoint
+app.post('/api/auth/apple', async (req, res) => {
+  const { identityToken } = req.body;
+  if (!identityToken) {
+    return res.status(400).json({ error: 'Missing identityToken' });
+  }
+
+  try {
+    // Decode token without verification to get kid
+    const decoded = jwt.decode(identityToken, { complete: true });
+    if (!decoded || !decoded.header.kid) {
+      return res.status(400).json({ error: 'Invalid token' });
+    }
+
+    // Get Apple public key
+    const key = await new Promise((resolve, reject) => {
+      appleJwksClient.getSigningKey(decoded.header.kid, (err, key) => {
+        if (err) reject(err);
+        else resolve(key.getPublicKey());
+      });
+    });
+
+    // Verify token
+    const payload = jwt.verify(identityToken, key, { algorithms: ['RS256'] });
+    const email = payload.email;
+
+    if (!email) {
+      return res.status(400).json({ error: 'No email in token' });
+    }
+
+    // Check if user exists
+    db.get('SELECT * FROM users WHERE email = ?', [email], (err, row) => {
+      if (err) {
+        return res.status(500).json({ error: 'Database error' });
+      }
+
+      if (row) {
+        // User exists, return user data
+        res.json({
+          user: {
+            id: row.id,
+            email: row.email,
+            turns_remaining: row.turns_remaining,
+            subscription_expires: row.subscription_expires
+          }
+        });
+      } else {
+        // New user, insert with 20 turns
+        db.run('INSERT INTO users (email, turns_remaining) VALUES (?, 20)', [email], function(err) {
+          if (err) {
+            return res.status(500).json({ error: 'Database error' });
+          }
+          res.json({
+            user: {
+              id: this.lastID,
+              email,
+              turns_remaining: 20,
+              subscription_expires: 0
+            }
+          });
+        });
+      }
+    });
+  } catch (e) {
+    console.error('Apple auth error:', e);
+    res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+// Get user data
+app.get('/api/user', (req, res) => {
+  const { email } = req.query;
+  if (!email) {
+    return res.status(400).json({ error: 'Missing email' });
+  }
+
+  db.get('SELECT * FROM users WHERE email = ?', [email], (err, row) => {
+    if (err) {
+      return res.status(500).json({ error: 'Database error' });
+    }
+    if (!row) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json({
+      user: {
+        id: row.id,
+        email: row.email,
+        turns_remaining: row.turns_remaining,
+        subscription_expires: row.subscription_expires
+      }
+    });
+  });
+});
+
+// IAP subscription verification (simplified)
+app.post('/api/subscription', (req, res) => {
+  const { email, receipt } = req.body;
+  if (!email || !receipt) {
+    return res.status(400).json({ error: 'Missing email or receipt' });
+  }
+
+  // In production, verify receipt with Apple servers
+  // For now, assume valid and set subscription to 1 year from now
+  const expires = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60; // 1 year
+
+  db.run('UPDATE users SET subscription_expires = ? WHERE email = ?', [expires, email], function(err) {
+    if (err) {
+      return res.status(500).json({ error: 'Database error' });
+    }
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json({ success: true, subscription_expires: expires });
+  });
 });
 
 app.get('/api/stats', (_req, res) => {
@@ -130,20 +270,26 @@ function detectSeriousTopic(prompt) {
 // Provider streaming helpers
 async function streamOpenAI({ prompt, language, round = 1 }) {
   if (!openai) return;
+  const maxTokens = round === 1 ? undefined : round === 2 ? undefined : 600;
   const roundInstruction = round === 1 
     ? "Provide a short and concise answer." 
-    : 
-  round === 2 
+    : round === 2 
     ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
-  const stream = await openai.chat.completions.create({
+  
+  const messages = [
+    { role: 'system', content: `You answer in ${language}. ${roundInstruction}` },
+    { role: 'user', content: prompt },
+  ];
+  
+  const options = {
     model: OPENAI_CHAT_MODEL,
-    messages: [
-      { role: 'system', content: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.` },
-      { role: 'user', content: prompt },
-    ],
+    messages,
     stream: true,
-  });
+  };
+  if (maxTokens) options.max_tokens = maxTokens;
+  
+  const stream = await openai.chat.completions.create(options);
   return stream;
 }
 
@@ -156,18 +302,21 @@ async function* chunksFromOpenAI(stream) {
 
 async function streamAnthropic({ prompt, language, round = 1 }) {
   if (!anthropic) return;
+  const maxTokens = round === 1 ? undefined : round === 2 ? undefined : 600;
   const roundInstruction = round === 1 
     ? "Provide a short and concise answer." 
     : round === 2 
     ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
     
-  const stream = await anthropic.messages.stream({
+  const options = {
     model: CLAUDE_MODEL,
-    max_tokens: 4096,
-    system: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`,
+    system: `You answer in ${language}. ${roundInstruction}`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-  });
+  };
+  if (maxTokens) options.max_tokens = maxTokens;
+  
+  const stream = await anthropic.messages.stream(options);
   return stream;
 }
 
@@ -189,7 +338,7 @@ async function streamGemini({ prompt, language, round = 1 }) {
     ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
     
-  const systemInstruction = `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`;
+  const systemInstruction = `You answer in ${language}. ${roundInstruction}`;
   const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction });
   const result = await model.generateContentStream(prompt);
   return result;
@@ -216,11 +365,11 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = n
   if (round === 1) {
     prompt += isSerious 
       ? "\n\n[ROUND 1 INSTRUCTION]: This appears to be a serious topic. Provide direct, helpful, and empathetic responses without playful elements."
-      : "\n\n[ROUND 1 INSTRUCTION]: Provide a short and concise answer.";
+      : "\n\n[ROUND 1 INSTRUCTION]: This is the first round. No other AI responses exist yet. Focus only on the question and give a direct answer. Don't mention previous rounds, previous responses, or other AIs.";
   } else if (round === 2) {
     prompt += isSerious
-      ? "\n\n[ROUND 2 INSTRUCTION]: Reference other AIs' responses professionally. Be thorough, supportive, and provide helpful information. Provide a clear and fluent explanation without writing too long."
-      : "\n\n[ROUND 2 INSTRUCTION]: This is the second round. Reference other AIs' responses (not your own!) with brief, playful references. IGNORE YOUR OWN PREVIOUS RESPONSE - act as if you never wrote it. Only mention other AIs. Be witty and make the reader smile! Provide a clear and fluent explanation without writing too long.";
+      ? "\n\n[ROUND 2 INSTRUCTION]: Reference other AIs' responses professionally. Be thorough, supportive, and provide helpful information."
+      : "\n\n[ROUND 2 INSTRUCTION]: This is the second round. Reference other AIs' responses (not your own!) with brief, playful references. IGNORE YOUR OWN PREVIOUS RESPONSE - act as if you never wrote it. Only mention other AIs. Be witty and make the reader smile!";
   } else if (round === 3) {
     prompt += isSerious
       ? "\n\n[ROUND 3 - COMPREHENSIVE ANALYSIS]: Provide a thorough, professional analysis of other AIs' responses. Focus on practical solutions and actionable advice."
@@ -279,10 +428,42 @@ app.post('/api/chat', async (req, res) => {
     useGemini = true,
     moderatorEngine = 'Moderator', // 'GPT' | 'Claude' | 'Gemini' | 'Moderator'
     moderatorStyle = 'neutral',
+    email, // New: user email for turn tracking
   } = req.body || {};
 
   if (!prompt || typeof prompt !== 'string') {
     return res.status(400).json({ error: 'Missing prompt' });
+  }
+
+  // Check user turns/subscription
+  if (email) {
+    try {
+      const user = await new Promise((resolve, reject) => {
+        db.get('SELECT * FROM users WHERE email = ?', [email], (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      });
+
+      if (!user) {
+        return res.status(403).json({ error: 'User not found. Please sign in.' });
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      const hasSubscription = user.subscription_expires > now;
+
+      if (!hasSubscription && user.turns_remaining <= 0) {
+        return res.status(403).json({ error: 'No turns remaining. Please subscribe.' });
+      }
+
+      // Deduct turn if no subscription
+      if (!hasSubscription) {
+        db.run('UPDATE users SET turns_remaining = turns_remaining - 1 WHERE email = ?', [email]);
+      }
+    } catch (e) {
+      console.error('Turn check error:', e);
+      return res.status(500).json({ error: 'Database error' });
+    }
   }
 
   sseHeaders(res);
