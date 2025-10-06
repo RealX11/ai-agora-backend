@@ -132,10 +132,10 @@ async function streamOpenAI({ prompt, language, round = 1 }) {
   if (!openai) return;
   const roundInstruction = round === 1 
     ? "Provide a short and concise answer." 
-    : round === 2 
-    ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
+    : 
+  round === 2 
+    ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
-  
   const stream = await openai.chat.completions.create({
     model: OPENAI_CHAT_MODEL,
     messages: [
@@ -159,7 +159,7 @@ async function streamAnthropic({ prompt, language, round = 1 }) {
   const roundInstruction = round === 1 
     ? "Provide a short and concise answer." 
     : round === 2 
-    ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
+    ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
     
   const stream = await anthropic.messages.stream({
@@ -186,7 +186,7 @@ async function streamGemini({ prompt, language, round = 1 }) {
   const roundInstruction = round === 1 
     ? "Provide a short and concise answer." 
     : round === 2 
-    ? "Keep response under 200 words. Reference other AIs in 1-2 sentences only. Be concise." 
+    ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
     
   const systemInstruction = `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`;
@@ -219,8 +219,8 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = n
       : "\n\n[ROUND 1 INSTRUCTION]: Provide a short and concise answer.";
   } else if (round === 2) {
     prompt += isSerious
-      ? "\n\n[ROUND 2 INSTRUCTION]: Reference other AIs' responses professionally. Be thorough, supportive, and provide helpful information."
-      : "\n\n[ROUND 2 INSTRUCTION]: This is the second round. Reference other AIs' responses (not your own!) with brief, playful references. IGNORE YOUR OWN PREVIOUS RESPONSE - act as if you never wrote it. Only mention other AIs. Be witty and make the reader smile!";
+      ? "\n\n[ROUND 2 INSTRUCTION]: Reference other AIs' responses professionally. Be thorough, supportive, and provide helpful information. Provide a clear and fluent explanation without writing too long."
+      : "\n\n[ROUND 2 INSTRUCTION]: This is the second round. Reference other AIs' responses (not your own!) with brief, playful references. IGNORE YOUR OWN PREVIOUS RESPONSE - act as if you never wrote it. Only mention other AIs. Be witty and make the reader smile! Provide a clear and fluent explanation without writing too long.";
   } else if (round === 3) {
     prompt += isSerious
       ? "\n\n[ROUND 3 - COMPREHENSIVE ANALYSIS]: Provide a thorough, professional analysis of other AIs' responses. Focus on practical solutions and actionable advice."
