@@ -46,6 +46,26 @@ const stats = {
   feedbacks: 0,
 };
 
+// User data helpers
+function loadUsers() {
+  try {
+    if (fs.existsSync('users.json')) {
+      return JSON.parse(fs.readFileSync('users.json', 'utf8'));
+    }
+  } catch (e) {
+    console.error('[users] Load error:', e);
+  }
+  return {};
+}
+
+function saveUsers(users) {
+  try {
+    fs.writeFileSync('users.json', JSON.stringify(users, null, 2));
+  } catch (e) {
+    console.error('[users] Save error:', e);
+  }
+}
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
@@ -90,6 +110,78 @@ app.post('/api/feedback', (req, res) => {
   }
   
   res.json({ ok: true });
+});
+
+// User endpoints
+app.post('/api/user/register', (req, res) => {
+  const { userId } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'Missing userId' });
+  }
+  
+  const users = loadUsers();
+  if (!users[userId]) {
+    users[userId] = {
+      userId,
+      turnsUsed: 0,
+      isPremium: false,
+      createdAt: new Date().toISOString(),
+      lastUsed: new Date().toISOString()
+    };
+    saveUsers(users);
+  }
+  
+  res.json({ user: users[userId] });
+});
+
+app.get('/api/user/:userId', (req, res) => {
+  const { userId } = req.params;
+  const users = loadUsers();
+  
+  if (!users[userId]) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  
+  res.json({ user: users[userId] });
+});
+
+app.post('/api/user/use-turns', (req, res) => {
+  const { userId, turns } = req.body;
+  if (!userId || !turns) {
+    return res.status(400).json({ error: 'Missing userId or turns' });
+  }
+  
+  const users = loadUsers();
+  if (!users[userId]) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  
+  // Premium kullanıcılar için sınırsız
+  if (!users[userId].isPremium) {
+    users[userId].turnsUsed += turns;
+  }
+  users[userId].lastUsed = new Date().toISOString();
+  saveUsers(users);
+  
+  res.json({ user: users[userId] });
+});
+
+app.post('/api/user/set-premium', (req, res) => {
+  const { userId, isPremium } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'Missing userId' });
+  }
+  
+  const users = loadUsers();
+  if (!users[userId]) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  
+  users[userId].isPremium = isPremium;
+  users[userId].premiumSince = isPremium ? new Date().toISOString() : null;
+  saveUsers(users);
+  
+  res.json({ user: users[userId] });
 });
 
 function sseHeaders(res) {
