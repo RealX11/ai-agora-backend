@@ -243,7 +243,7 @@ async function streamOpenAI({ prompt, language, round = 1 }) {
   const stream = await openai.chat.completions.create({
     model: OPENAI_CHAT_MODEL,
     messages: [
-      { role: 'system', content: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.` },
+      { role: 'system', content: `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.` },
       { role: 'user', content: prompt },
     ],
     stream: true,
@@ -269,7 +269,7 @@ async function streamAnthropic({ prompt, language, round = 1 }) {
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
     max_tokens: 4096,
-    system: `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`,
+    system: `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
   return stream;
@@ -293,7 +293,7 @@ async function streamGemini({ prompt, language, round = 1 }) {
     ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
     
-  const systemInstruction = `You answer in ${language}. ${roundInstruction} STRICT WORD LIMIT ENFORCEMENT.`;
+  const systemInstruction = `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.`;
   const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction });
   const result = await model.generateContentStream(prompt);
   return result;
@@ -362,7 +362,7 @@ function moderatorPrompt(style, language, collected, rounds = 1) {
         : "Since you chose three rounds, you're quite serious about this topic, well then...")
     : "";
 
-  const basePrompt = `Act as a moderator. Language: ${language}.\n${styleGuidance}\nSynthesize the following model responses into a single, helpful answer.`;
+  const basePrompt = `Act as a moderator. ${styleGuidance} Synthesize the following model responses into a single, helpful answer. CRITICAL: Respond in the SAME LANGUAGE as the user's original question.`;
   
   return personalizedIntro 
     ? `${basePrompt}\n\n${personalizedIntro}\n\n${lines}`
