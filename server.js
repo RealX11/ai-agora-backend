@@ -389,6 +389,8 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: 'Missing prompt' });
   }
 
+  console.log(`🌍 Gelen language parametresi: "${language}" - Soru: "${prompt.substring(0, 50)}..."`);
+
   sseHeaders(res);
   sseSend(res, 'meta', { startedAt, rounds, moderatorEngine, moderatorStyle });
 
