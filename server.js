@@ -146,7 +146,7 @@ app.get('/api/user/:userId', (req, res) => {
 });
 
 app.post('/api/user/use-turns', (req, res) => {
-  const { userId, turns } = req.body;
+  const { userId, turns, isPremium } = req.body;
   if (!userId || !turns) {
     return res.status(400).json({ error: 'Missing userId or turns' });
   }
@@ -154,6 +154,18 @@ app.post('/api/user/use-turns', (req, res) => {
   const users = loadUsers();
   if (!users[userId]) {
     return res.status(404).json({ error: 'User not found' });
+  }
+  
+  // iOS'tan gelen güncel premium durumunu güncelle
+  if (typeof isPremium === 'boolean') {
+    const wasPremium = users[userId].isPremium;
+    users[userId].isPremium = isPremium;
+    
+    // Premium durumu değiştiyse logla
+    if (wasPremium !== isPremium) {
+      console.log(`🔄 Premium durumu güncellendi: ${userId} → ${isPremium}`);
+      users[userId].premiumSince = isPremium ? new Date().toISOString() : null;
+    }
   }
   
   // Premium kullanıcılar için sınırsız
