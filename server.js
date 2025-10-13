@@ -2,9 +2,15 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+
+// ES modules için __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Load env
 dotenv.config();
@@ -114,7 +120,7 @@ app.post('/api/feedback', (req, res) => {
 
 // User endpoints
 app.post('/api/user/register', (req, res) => {
-  const { userId } = req.body;
+  const { userId, userName, userEmail } = req.body;
   if (!userId) {
     return res.status(400).json({ error: 'Missing userId' });
   }
@@ -123,11 +129,20 @@ app.post('/api/user/register', (req, res) => {
   if (!users[userId]) {
     users[userId] = {
       userId,
+      userName: userName || 'Anonymous',
+      userEmail: userEmail || '',
       turnsUsed: 0,
       isPremium: false,
       createdAt: new Date().toISOString(),
       lastUsed: new Date().toISOString()
     };
+    saveUsers(users);
+    console.log(`✅ Yeni kullanıcı kaydedildi: ${userName || 'Anonymous'} (${userId})`);
+  } else {
+    // Mevcut kullanıcının bilgilerini güncelle
+    if (userName) users[userId].userName = userName;
+    if (userEmail) users[userId].userEmail = userEmail;
+    users[userId].lastUsed = new Date().toISOString();
     saveUsers(users);
   }
   
@@ -527,6 +542,63 @@ app.post('/api/chat', async (req, res) => {
 
   stats.chats += 1;
   sseDone(res);
+});
+
+// Admin endpoints
+app.get('/api/admin/users', (req, res) => {
+  const users = loadUsers();
+  const userList = Object.values(users).map(user => ({
+    userId: user.userId,
+    userName: user.userName || 'Anonymous',
+    userEmail: user.userEmail || '',
+    turnsUsed: user.turnsUsed || 0,
+    isPremium: user.isPremium || false,
+    createdAt: user.createdAt,
+    lastUsed: user.lastUsed
+  }));
+  
+  res.json({ 
+    users: userList, 
+    count: userList.length,
+    premiumCount: userList.filter(u => u.isPremium).length
+  });
+});
+
+app.post('/api/admin/user/:userId/premium', (req, res) => {
+  const { userId } = req.params;
+  const { isPremium } = req.body;
+  
+  const users = loadUsers();
+  if (users[userId]) {
+    users[userId].isPremium = isPremium;
+    users[userId].premiumSince = isPremium ? new Date().toISOString() : null;
+    saveUsers(users);
+    
+    console.log(`🔧 Admin: ${users[userId].userName || 'Anonymous'} (${userId}) premium durumu ${isPremium ? 'aktif' : 'pasif'} yapıldı`);
+    res.json({ success: true, user: users[userId] });
+  } else {
+    res.status(404).json({ error: 'User not found' });
+  }
+});
+
+app.post('/api/admin/user/:userId/reset-turns', (req, res) => {
+  const { userId } = req.params;
+  
+  const users = loadUsers();
+  if (users[userId]) {
+    users[userId].turnsUsed = 0;
+    saveUsers(users);
+    
+    console.log(`🔧 Admin: ${users[userId].userName || 'Anonymous'} (${userId}) tur sayısı sıfırlandı`);
+    res.json({ success: true, user: users[userId] });
+  } else {
+    res.status(404).json({ error: 'User not found' });
+  }
+});
+
+// Admin sayfasını serve et
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
 app.listen(PORT, () => {
