@@ -126,6 +126,53 @@ app.post('/api/feedback', (req, res) => {
   res.json({ ok: true });
 });
 
+// Email Auth endpoint (GEÇİCİ - Test için)
+app.post('/api/auth/email', (req, res) => {
+  const { email, password, name } = req.body;
+  console.log(`📧 Email auth request: ${email}`);
+  
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email ve şifre gerekli' });
+  }
+  
+  // Basit hash (userId olarak kullanılacak)
+  const userId = Buffer.from(email.toLowerCase()).toString('base64').substring(0, 32);
+  
+  const users = loadUsers();
+  
+  // Yeni kullanıcı mı yoksa giriş mi?
+  if (!users[userId]) {
+    // Yeni kullanıcı kaydı
+    users[userId] = {
+      userId,
+      userName: name || 'User',
+      userEmail: email,
+      loginType: 'email',
+      turnsUsed: 0,
+      isPremium: false,
+      createdAt: new Date().toISOString(),
+      lastUsed: new Date().toISOString()
+    };
+    saveUsers(users);
+    console.log(`✅ Yeni email kullanıcı kaydedildi: ${email} (${userId})`);
+  } else {
+    // Mevcut kullanıcı girişi
+    users[userId].lastUsed = new Date().toISOString();
+    saveUsers(users);
+    console.log(`✅ Email kullanıcı giriş yaptı: ${email} (${userId})`);
+  }
+  
+  res.json({ 
+    user: {
+      userId: users[userId].userId,
+      userName: users[userId].userName,
+      email: users[userId].userEmail,
+      turnsUsed: users[userId].turnsUsed,
+      isPremium: users[userId].isPremium
+    }
+  });
+});
+
 // User endpoints
 app.post('/api/user/register', (req, res) => {
   const { userId, userName, userEmail } = req.body;
