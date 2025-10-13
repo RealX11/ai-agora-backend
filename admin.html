@@ -176,6 +176,28 @@
             gap: 6px;
         }
         
+        .email-badge {
+            background: #007AFF;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+            margin-top: 4px;
+        }
+        
+        .apple-badge {
+            background: #000000;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+            margin-top: 4px;
+        }
+        
         .feedback-badge {
             background: linear-gradient(135deg, #4CAF50, #45a049);
             color: white;
@@ -494,6 +516,7 @@
                 const isPremium = user.isPremium || false;
                 const turnsUsed = user.turnsUsed || 0;
                 const remainingTurns = isPremium ? 'Sınırsız' : `${20 - turnsUsed}/20`;
+                const loginType = user.loginType || 'apple';
                 
                 return `
                     <div class="user-card">
@@ -502,6 +525,10 @@
                                 <h3>${userName}</h3>
                                 <div class="user-email">${userEmail}</div>
                                 <div class="user-id">ID: ${userId.substring(0, 20)}...</div>
+                                ${loginType === 'email' ? 
+                                    '<span class="email-badge">📧 Email</span>' : 
+                                    '<span class="apple-badge">🍎 Apple</span>'
+                                }
                             </div>
                             <div>
                                 ${isPremium ? 
