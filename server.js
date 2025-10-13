@@ -126,51 +126,53 @@ app.post('/api/feedback', (req, res) => {
   res.json({ ok: true });
 });
 
-// Email Auth endpoint (GEÇİCİ - Test için)
+// Email Auth endpoint (TEST ONLY)
 app.post('/api/auth/email', (req, res) => {
   const { email, password, name } = req.body;
   console.log(`📧 Email auth request: ${email}`);
   
   if (!email || !password) {
-    return res.status(400).json({ error: 'Email ve şifre gerekli' });
+    return res.status(400).json({ error: 'Email and password required' });
   }
   
-  // Basit hash (userId olarak kullanılacak)
-  const userId = Buffer.from(email.toLowerCase()).toString('base64').substring(0, 32);
-  
-  const users = loadUsers();
-  
-  // Yeni kullanıcı mı yoksa giriş mi?
-  if (!users[userId]) {
-    // Yeni kullanıcı kaydı
-    users[userId] = {
-      userId,
-      userName: name || 'User',
-      userEmail: email,
-      loginType: 'email',
-      turnsUsed: 0,
-      isPremium: false,
-      createdAt: new Date().toISOString(),
-      lastUsed: new Date().toISOString()
-    };
-    saveUsers(users);
-    console.log(`✅ Yeni email kullanıcı kaydedildi: ${email} (${userId})`);
-  } else {
-    // Mevcut kullanıcı girişi
-    users[userId].lastUsed = new Date().toISOString();
-    saveUsers(users);
-    console.log(`✅ Email kullanıcı giriş yaptı: ${email} (${userId})`);
-  }
-  
-  res.json({ 
-    user: {
-      userId: users[userId].userId,
-      userName: users[userId].userName,
-      email: users[userId].userEmail,
-      turnsUsed: users[userId].turnsUsed,
-      isPremium: users[userId].isPremium
+  // Test account credentials
+  if (email === 'test@aiagora.com' && password === 'test123') {
+    const userId = 'test_user_001';
+    const users = loadUsers();
+    
+    // Test kullanıcısını oluştur (sadece ilk seferde)
+    if (!users[userId]) {
+      users[userId] = {
+        userId,
+        userName: 'Test User',
+        userEmail: 'test@aiagora.com',
+        loginType: 'email',
+        turnsUsed: 0,
+        isPremium: false,
+        createdAt: new Date().toISOString(),
+        lastUsed: new Date().toISOString()
+      };
+      saveUsers(users);
+      console.log(`✅ Test user created: test@aiagora.com (${userId})`);
+    } else {
+      // Test kullanıcısı girişi
+      users[userId].lastUsed = new Date().toISOString();
+      saveUsers(users);
+      console.log(`✅ Test user login: test@aiagora.com (${userId})`);
     }
-  });
+    
+    res.json({ 
+      user: {
+        userId: users[userId].userId,
+        userName: users[userId].userName,
+        email: users[userId].userEmail,
+        turnsUsed: users[userId].turnsUsed,
+        isPremium: users[userId].isPremium
+      }
+    });
+  } else {
+    res.status(401).json({ error: 'Invalid test credentials' });
+  }
 });
 
 // User endpoints
