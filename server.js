@@ -140,10 +140,17 @@ app.post('/api/user/register', (req, res) => {
     console.log(`✅ Yeni kullanıcı kaydedildi: ${userName || 'Anonymous'} (${userId})`);
   } else {
     // Mevcut kullanıcının bilgilerini güncelle
-    if (userName) users[userId].userName = userName;
-    if (userEmail) users[userId].userEmail = userEmail;
+    if (userName && userName !== 'Anonymous') {
+      users[userId].userName = userName;
+      console.log(`🔄 Kullanıcı adı güncellendi: ${userName} (${userId})`);
+    }
+    if (userEmail && userEmail !== '') {
+      users[userId].userEmail = userEmail;
+      console.log(`🔄 Email güncellendi: ${userEmail} (${userId})`);
+    }
     users[userId].lastUsed = new Date().toISOString();
     saveUsers(users);
+    console.log(`✅ Mevcut kullanıcı güncellendi: ${users[userId].userName} (${userId})`);
   }
   
   res.json({ user: users[userId] });
