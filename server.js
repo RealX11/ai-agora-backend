@@ -97,11 +97,17 @@ app.post('/api/feedback', (req, res) => {
   stats.feedbacks += 1;
   console.log('[feedback]', JSON.stringify(req.body));
   
-  // Save to file
+  // Save to file with user info
   const feedback = {
     ...req.body,
     timestamp: new Date().toISOString(),
-    id: Date.now()
+    id: Date.now(),
+    // Kullanıcı bilgilerini ekle
+    userId: req.body.userId || 'unknown',
+    userName: req.body.userName || 'Anonymous',
+    userEmail: req.body.userEmail || '',
+    isPremium: req.body.isPremium || false,
+    deviceInfo: req.body.deviceInfo || {}
   };
   
   try {
@@ -111,6 +117,8 @@ app.post('/api/feedback', (req, res) => {
     }
     feedbacks.push(feedback);
     fs.writeFileSync('feedbacks.json', JSON.stringify(feedbacks, null, 2));
+    
+    console.log(`✅ Feedback kaydedildi: ${feedback.userName} - ${feedback.message?.substring(0, 50)}...`);
   } catch (e) {
     console.error('[feedback] File write error:', e);
   }
@@ -121,6 +129,8 @@ app.post('/api/feedback', (req, res) => {
 // User endpoints
 app.post('/api/user/register', (req, res) => {
   const { userId, userName, userEmail } = req.body;
+  console.log(`📝 Register request: userId=${userId}, userName=${userName}, userEmail=${userEmail}`);
+  
   if (!userId) {
     return res.status(400).json({ error: 'Missing userId' });
   }
@@ -569,6 +579,26 @@ app.get('/api/admin/users', (req, res) => {
     count: userList.length,
     premiumCount: userList.filter(u => u.isPremium).length
   });
+});
+
+app.get('/api/admin/feedbacks', (req, res) => {
+  try {
+    let feedbacks = [];
+    if (fs.existsSync('feedbacks.json')) {
+      feedbacks = JSON.parse(fs.readFileSync('feedbacks.json', 'utf8'));
+    }
+    
+    // En yeni feedback'ler önce gelecek şekilde sırala
+    feedbacks.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    
+    res.json({ 
+      feedbacks: feedbacks,
+      count: feedbacks.length
+    });
+  } catch (e) {
+    console.error('[admin/feedbacks] Error:', e);
+    res.status(500).json({ error: 'Could not read feedbacks' });
+  }
 });
 
 app.post('/api/admin/user/:userId/premium', (req, res) => {
