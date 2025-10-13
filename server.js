@@ -596,8 +596,128 @@ app.post('/api/admin/user/:userId/reset-turns', (req, res) => {
   }
 });
 
-// Admin sayfasını serve et
+// Admin sayfasını serve et - Şifre korumalı
 app.get('/admin', (req, res) => {
+  const password = req.query.password;
+  const ADMIN_PASSWORD = 'LBj%SLwx&T%iDJYO';
+  
+  if (password !== ADMIN_PASSWORD) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html lang="tr">
+      <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>AI Agora Admin - Giriş</title>
+          <style>
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+              body { 
+                  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+                  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                  min-height: 100vh;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  padding: 20px;
+              }
+              .login-container {
+                  background: rgba(255, 255, 255, 0.2);
+                  backdrop-filter: blur(10px);
+                  border-radius: 20px;
+                  padding: 40px;
+                  text-align: center;
+                  border: 1px solid rgba(255, 255, 255, 0.3);
+                  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                  max-width: 400px;
+                  width: 100%;
+              }
+              h1 {
+                  color: white;
+                  font-size: 28px;
+                  margin-bottom: 30px;
+                  font-weight: 700;
+              }
+              .lock-icon {
+                  font-size: 48px;
+                  margin-bottom: 20px;
+              }
+              .form-group {
+                  margin-bottom: 20px;
+              }
+              input[type="password"] {
+                  width: 100%;
+                  padding: 15px 20px;
+                  border: 2px solid rgba(255, 255, 255, 0.3);
+                  border-radius: 12px;
+                  background: rgba(255, 255, 255, 0.1);
+                  color: white;
+                  font-size: 16px;
+                  backdrop-filter: blur(10px);
+                  transition: all 0.3s;
+              }
+              input[type="password"]:focus {
+                  outline: none;
+                  border-color: rgba(255, 255, 255, 0.6);
+                  background: rgba(255, 255, 255, 0.2);
+              }
+              input[type="password"]::placeholder {
+                  color: rgba(255, 255, 255, 0.7);
+              }
+              button {
+                  width: 100%;
+                  padding: 15px 20px;
+                  background: rgba(255, 255, 255, 0.2);
+                  border: 2px solid rgba(255, 255, 255, 0.3);
+                  border-radius: 12px;
+                  color: white;
+                  font-size: 16px;
+                  font-weight: 600;
+                  cursor: pointer;
+                  transition: all 0.3s;
+                  backdrop-filter: blur(10px);
+              }
+              button:hover {
+                  background: rgba(255, 255, 255, 0.3);
+                  border-color: rgba(255, 255, 255, 0.5);
+                  transform: translateY(-2px);
+              }
+              .error {
+                  color: #ff6b6b;
+                  margin-top: 15px;
+                  font-size: 14px;
+              }
+              .info {
+                  color: rgba(255, 255, 255, 0.8);
+                  margin-top: 20px;
+                  font-size: 12px;
+              }
+          </style>
+      </head>
+      <body>
+          <div class="login-container">
+              <div class="lock-icon">🔒</div>
+              <h1>AI Agora Admin Panel</h1>
+              <p style="color: rgba(255, 255, 255, 0.8); margin-bottom: 30px;">Güvenli erişim için şifre gerekli</p>
+              
+              <form method="get">
+                  <div class="form-group">
+                      <input type="password" name="password" placeholder="Admin şifresi" required>
+                  </div>
+                  <button type="submit">🔑 Giriş Yap</button>
+              </form>
+              
+              ${password ? '<div class="error">❌ Hatalı şifre! Lütfen tekrar deneyin.</div>' : ''}
+              
+              <div class="info">
+                  Bu alan sadece yetkili kişiler içindir.<br>
+                  Erişim izniniz yoksa lütfen çıkın.
+              </div>
+          </div>
+      </body>
+      </html>
+    `);
+  }
+  
   res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
