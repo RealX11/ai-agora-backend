@@ -639,6 +639,33 @@ app.post('/api/admin/user/:userId/reset-turns', (req, res) => {
   }
 });
 
+app.post('/api/admin/user/:userId/reduce-turns', (req, res) => {
+  const { userId } = req.params;
+  const { targetTurns = 2 } = req.body; // Hedef kalan tur sayısı (varsayılan 2)
+  
+  const users = loadUsers();
+  if (users[userId]) {
+    // Premium kullanıcılar için tur düşürme
+    if (users[userId].isPremium) {
+      return res.status(400).json({ error: 'Premium kullanıcılar için tur düşürme yapılamaz' });
+    }
+    
+    // Kalan tur sayısını hedef sayıya düşür
+    const currentRemaining = 30 - users[userId].turnsUsed;
+    const turnsToReduce = Math.max(0, currentRemaining - targetTurns);
+    
+    users[userId].turnsUsed = Math.min(30, users[userId].turnsUsed + turnsToReduce);
+    users[userId].lastUsed = new Date().toISOString();
+    saveUsers(users);
+    
+    const finalRemainingTurns = 30 - users[userId].turnsUsed;
+    console.log(`🔧 Admin: ${users[userId].userName || 'Anonymous'} (${userId}) tur sayısı ${turnsToReduce} azaltıldı. Kalan: ${finalRemainingTurns}`);
+    res.json({ success: true, user: users[userId], message: `Kalan tur sayısı ${finalRemainingTurns}'e düşürüldü` });
+  } else {
+    res.status(404).json({ error: 'User not found' });
+  }
+});
+
 // Admin sayfasını serve et - Şifre korumalı
 app.get('/admin', (req, res) => {
   const password = req.query.password;
