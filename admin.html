@@ -550,6 +550,9 @@
                         
                         <div class="user-stats">
                             <div class="stat-item">🎯 Tur: ${remainingTurns}</div>
+                            ${isPremium && user.premiumTurnsUsed ? 
+                                `<div class="stat-item">👑 Premium Tur: ${user.premiumTurnsUsed}</div>` : ''
+                            }
                             <div class="stat-item">📅 Kayıt: ${formatDate(user.createdAt).relative}</div>
                             <div class="stat-item">🕒 Son: ${relative}</div>
                         </div>
@@ -566,6 +569,11 @@
                             <button class="btn btn-reset" onclick="resetTurns('${userId}')">
                                 🔄 Tur Sıfırla
                             </button>
+                            ${isPremium ? 
+                                `<button class="btn btn-reset" onclick="resetPremiumTurns('${userId}')">
+                                    👑 Premium Tur Sıfırla
+                                </button>` : ''
+                            }
                             ${!isPremium ? 
                                 `<button class="btn btn-reduce" onclick="reduceTurns('${userId}')">
                                     ⬇️ Turu 2 Düşür
@@ -732,6 +740,29 @@
                 }
             } catch (error) {
                 console.error('Reduce turns error:', error);
+                alert('Hata: ' + error.message);
+            }
+        }
+
+        async function resetPremiumTurns(userId) {
+            if (!confirm('Bu kullanıcının premium tur sayısını sıfırlamak istediğinizden emin misiniz?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/admin/user/${userId}/reset-premium-turns`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log(`✅ Premium tur sayısı sıfırlandı: ${result.user.userName}`);
+                    loadUsers(); // Listeyi yenile
+                } else {
+                    alert('Hata: Premium tur sayısı sıfırlanamadı');
+                }
+            } catch (error) {
+                console.error('Reset premium turns error:', error);
                 alert('Hata: ' + error.message);
             }
         }
