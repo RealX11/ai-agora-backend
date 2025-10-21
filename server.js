@@ -208,7 +208,9 @@ app.post('/api/user/use-turns', (req, res) => {
     users[userId].turnsUsed += turns;
     console.log(`📊 Tur kullanıldı: ${users[userId].userName} → ${users[userId].turnsUsed}/30`);
   } else {
-    console.log(`👑 Premium kullanıcı - sınırsız: ${users[userId].userName}`);
+    // Premium kullanıcıların da tur sayısını takip et (kötüye kullanım kontrolü)
+    users[userId].premiumTurnsUsed = (users[userId].premiumTurnsUsed || 0) + turns;
+    console.log(`👑 Premium kullanıcı - sınırsız: ${users[userId].userName} (Toplam: ${users[userId].premiumTurnsUsed})`);
   }
   users[userId].lastUsed = new Date().toISOString();
   saveUsers(users);
@@ -661,6 +663,21 @@ app.post('/api/admin/user/:userId/reduce-turns', (req, res) => {
     const finalRemainingTurns = 30 - users[userId].turnsUsed;
     console.log(`🔧 Admin: ${users[userId].userName || 'Anonymous'} (${userId}) tur sayısı ${turnsToReduce} azaltıldı. Kalan: ${finalRemainingTurns}`);
     res.json({ success: true, user: users[userId], message: `Kalan tur sayısı ${finalRemainingTurns}'e düşürüldü` });
+  } else {
+    res.status(404).json({ error: 'User not found' });
+  }
+});
+
+app.post('/api/admin/user/:userId/reset-premium-turns', (req, res) => {
+  const { userId } = req.params;
+  
+  const users = loadUsers();
+  if (users[userId]) {
+    users[userId].premiumTurnsUsed = 0;
+    saveUsers(users);
+    
+    console.log(`🔧 Admin: ${users[userId].userName || 'Anonymous'} (${userId}) premium tur sayısı sıfırlandı`);
+    res.json({ success: true, user: users[userId] });
   } else {
     res.status(404).json({ error: 'User not found' });
   }
