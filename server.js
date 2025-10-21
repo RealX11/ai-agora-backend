@@ -126,56 +126,8 @@ app.post('/api/feedback', (req, res) => {
   res.json({ ok: true });
 });
 
-// Email Auth endpoint (TEST ONLY)
-app.post('/api/auth/email', (req, res) => {
-  const { email, password, name } = req.body;
-  console.log(`📧 Email auth request: ${email}`);
-  
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password required' });
-  }
-  
-  // Test account credentials
-  if (email === 'test@aiagora.com' && password === 'test123') {
-    const userId = 'test_user_001';
-    const users = loadUsers();
-    
-    // Test kullanıcısını oluştur (sadece ilk seferde)
-    if (!users[userId]) {
-      users[userId] = {
-        userId,
-        userName: 'Test User',
-        userEmail: 'test@aiagora.com',
-        loginType: 'email',
-        turnsUsed: 0,
-        isPremium: false,
-        createdAt: new Date().toISOString(),
-        lastUsed: new Date().toISOString()
-      };
-      saveUsers(users);
-      console.log(`✅ Test user created: test@aiagora.com (${userId})`);
-    } else {
-      // Test kullanıcısı girişi
-      users[userId].lastUsed = new Date().toISOString();
-      saveUsers(users);
-      console.log(`✅ Test user login: test@aiagora.com (${userId})`);
-    }
-    
-    res.json({ 
-      user: {
-        userId: users[userId].userId,
-        userName: users[userId].userName,
-        email: users[userId].userEmail,
-        turnsUsed: users[userId].turnsUsed,
-        isPremium: users[userId].isPremium
-      }
-    });
-  } else {
-    res.status(401).json({ error: 'Invalid test credentials' });
-  }
-});
-
 // User endpoints
+// userId: Device ID (ilk 30 tur için) veya Apple ID (premium için)
 app.post('/api/user/register', (req, res) => {
   const { userId, userName, userEmail } = req.body;
   console.log(`📝 Register request: userId=${userId}, userName=${userName}, userEmail=${userEmail}`);
@@ -193,10 +145,11 @@ app.post('/api/user/register', (req, res) => {
       turnsUsed: 0,
       isPremium: false,
       createdAt: new Date().toISOString(),
-      lastUsed: new Date().toISOString()
+      lastUsed: new Date().toISOString(),
+      userType: userEmail ? 'apple' : 'device' // Device ID mi Apple ID mi?
     };
     saveUsers(users);
-    console.log(`✅ Yeni kullanıcı kaydedildi: ${userName || 'Anonymous'} (${userId})`);
+    console.log(`✅ Yeni kullanıcı kaydedildi: ${userName || 'Anonymous'} (${users[userId].userType}) - ${userId}`);
   } else {
     // Mevcut kullanıcının bilgilerini güncelle
     if (userName && userName !== 'Anonymous') {
@@ -205,6 +158,7 @@ app.post('/api/user/register', (req, res) => {
     }
     if (userEmail && userEmail !== '') {
       users[userId].userEmail = userEmail;
+      users[userId].userType = 'apple'; // Email varsa Apple kullanıcısı
       console.log(`🔄 Email güncellendi: ${userEmail} (${userId})`);
     }
     users[userId].lastUsed = new Date().toISOString();
@@ -249,9 +203,12 @@ app.post('/api/user/use-turns', (req, res) => {
     }
   }
   
-  // Premium kullanıcılar için sınırsız
+  // Premium kullanıcılar için sınırsız (tur sayacı artmaz)
   if (!users[userId].isPremium) {
     users[userId].turnsUsed += turns;
+    console.log(`📊 Tur kullanıldı: ${users[userId].userName} → ${users[userId].turnsUsed}/30`);
+  } else {
+    console.log(`👑 Premium kullanıcı - sınırsız: ${users[userId].userName}`);
   }
   users[userId].lastUsed = new Date().toISOString();
   saveUsers(users);
