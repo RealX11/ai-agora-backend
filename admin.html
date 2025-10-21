@@ -550,8 +550,8 @@
                         
                         <div class="user-stats">
                             <div class="stat-item">🎯 Tur: ${remainingTurns}</div>
-                            ${isPremium && user.premiumTurnsUsed ? 
-                                `<div class="stat-item">👑 Premium Tur: ${user.premiumTurnsUsed}</div>` : ''
+                            ${isPremium ? 
+                                `<div class="stat-item">👑 Premium Tur: ${user.premiumTurnsUsed || 0}</div>` : ''
                             }
                             <div class="stat-item">📅 Kayıt: ${formatDate(user.createdAt).relative}</div>
                             <div class="stat-item">🕒 Son: ${relative}</div>
