@@ -683,6 +683,22 @@ app.post('/api/admin/user/:userId/reset-premium-turns', (req, res) => {
   }
 });
 
+app.delete('/api/admin/user/:userId', (req, res) => {
+  const { userId } = req.params;
+  
+  const users = loadUsers();
+  if (users[userId]) {
+    const userName = users[userId].userName || 'Anonymous';
+    delete users[userId];
+    saveUsers(users);
+    
+    console.log(`🗑️ Admin: ${userName} (${userId}) tamamen silindi - Yeni kullanıcı gibi algılanacak`);
+    res.json({ success: true, message: `Kullanıcı ${userName} tamamen silindi` });
+  } else {
+    res.status(404).json({ error: 'User not found' });
+  }
+});
+
 // Admin sayfasını serve et - Şifre korumalı
 app.get('/admin', (req, res) => {
   const password = req.query.password;
