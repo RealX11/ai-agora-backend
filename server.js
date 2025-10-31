@@ -185,28 +185,37 @@ app.post('/api/user/use-turns', (req, res) => {
   if (!userId || !turns) {
     return res.status(400).json({ error: 'Missing userId or turns' });
   }
-  
+
   const users = loadUsers();
   if (!users[userId]) {
     return res.status(404).json({ error: 'User not found' });
   }
-  
-  // iOS'tan gelen güncel premium durumunu güncelle
-  if (typeof isPremium === 'boolean') {
-    const wasPremium = users[userId].isPremium;
-    users[userId].isPremium = isPremium;
-    // Eğer Apple girişi yoksa Premium olamaz
-    if (isPremium && !users[userId].userEmail) {
-      console.warn(`🚫 Apple girişi olmayan kullanıcı Premium olamaz: ${userId}`);
+
+  // iOS'tan gelen güncel premium durumunu kontrol et ve sadece false ise sıfırla
+  if (typeof isPremium !== 'undefined') {
+    // isPremium değerini string olarak kontrol et (ör: "true"/"false" veya boolean)
+    let isPremiumBool = isPremium;
+    if (typeof isPremium === 'string') {
+      isPremiumBool = isPremium.trim().toLowerCase() === 'true';
+    }
+    // undefined, null veya boş string ise false kabul et
+    if (
+      isPremium === undefined ||
+      (typeof isPremium === 'string' && isPremium.trim() === '')
+    ) {
+      isPremiumBool = false;
+    }
+    // Eğer isPremium false ise sadece premium alanını false yap
+    if (!isPremiumBool && users[userId].isPremium) {
       users[userId].isPremium = false;
+      users[userId].premiumSince = null;
+      console.log(`🔄 Premium durumu güncellendi: ${userId} → false`);
     }
-    // Premium durumu değiştiyse logla
-    if (wasPremium !== isPremium) {
-      console.log(`🔄 Premium durumu güncellendi: ${userId} → ${isPremium}`);
-      users[userId].premiumSince = isPremium ? new Date().toISOString() : null;
-    }
+    // Eğer isPremium true ise, bu endpoint'te premium setleme yapılmaz!
+    // Apple girişi olmayan kullanıcıyı premium yapma (güvenlik için)
+    // Premium setleme işlemi sadece /api/user/set-premium'ta yapılır
   }
-  
+
   // Premium kullanıcılar için sınırsız (tur sayacı artmaz)
   if (!users[userId].isPremium) {
     users[userId].turnsUsed += turns;
@@ -218,7 +227,7 @@ app.post('/api/user/use-turns', (req, res) => {
   }
   users[userId].lastUsed = new Date().toISOString();
   saveUsers(users);
-  
+
   res.json({ user: users[userId] });
 });
 
@@ -227,21 +236,41 @@ app.post('/api/user/set-premium', (req, res) => {
   if (!userId) {
     return res.status(400).json({ error: 'Missing userId' });
   }
-  
+
   const users = loadUsers();
   if (!users[userId]) {
     return res.status(404).json({ error: 'User not found' });
   }
-  
+
   // Apple girişi olmayan kullanıcı Premium olamaz
-  if (isPremium && !users[userId].userEmail) {
+  const userEmail = users[userId].userEmail;
+  if (
+    isPremium &&
+    (
+      userEmail === undefined ||
+      userEmail === null ||
+      (typeof userEmail === 'string' && userEmail.trim() === '')
+    )
+  ) {
     console.warn(`🚫 Apple girişi olmayan kullanıcı Premium olamaz: ${userId}`);
     return res.status(400).json({ error: 'Premium cannot be set without Apple Sign-In' });
   }
-  users[userId].isPremium = isPremium;
-  users[userId].premiumSince = isPremium ? new Date().toISOString() : null;
+  // Premium setlemede trim kontrolü
+  let isPremiumBool = isPremium;
+  if (typeof isPremium === 'string') {
+    isPremiumBool = isPremium.trim().toLowerCase() === 'true';
+  }
+  // undefined, null veya boş string ise false kabul et
+  if (
+    isPremium === undefined ||
+    (typeof isPremium === 'string' && isPremium.trim() === '')
+  ) {
+    isPremiumBool = false;
+  }
+  users[userId].isPremium = isPremiumBool;
+  users[userId].premiumSince = isPremiumBool ? new Date().toISOString() : null;
   saveUsers(users);
-  
+
   res.json({ user: users[userId] });
 });
 
@@ -711,8 +740,8 @@ app.delete('/api/admin/user/:userId', (req, res) => {
 // Admin sayfasını serve et - Şifre korumalı
 app.get('/admin', (req, res) => {
   const password = req.query.password;
-  const ADMIN_PASSWORD = 'LBj%SLwx&T%iDJYO';
-  
+  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'default_admin_password';
+
   if (password !== ADMIN_PASSWORD) {
     return res.send(`
       <!DOCTYPE html>
@@ -834,5 +863,5 @@ app.get('/admin', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AI Agora backend listening on :${PORT}`);
+  console.log(`✅ AI Agora backend listening on :${PORT}`);
 });
