@@ -195,7 +195,11 @@ app.post('/api/user/use-turns', (req, res) => {
   if (typeof isPremium === 'boolean') {
     const wasPremium = users[userId].isPremium;
     users[userId].isPremium = isPremium;
-    
+    // Eğer Apple girişi yoksa Premium olamaz
+    if (isPremium && !users[userId].userEmail) {
+      console.warn(`🚫 Apple girişi olmayan kullanıcı Premium olamaz: ${userId}`);
+      users[userId].isPremium = false;
+    }
     // Premium durumu değiştiyse logla
     if (wasPremium !== isPremium) {
       console.log(`🔄 Premium durumu güncellendi: ${userId} → ${isPremium}`);
@@ -229,6 +233,11 @@ app.post('/api/user/set-premium', (req, res) => {
     return res.status(404).json({ error: 'User not found' });
   }
   
+  // Apple girişi olmayan kullanıcı Premium olamaz
+  if (isPremium && !users[userId].userEmail) {
+    console.warn(`🚫 Apple girişi olmayan kullanıcı Premium olamaz: ${userId}`);
+    return res.status(400).json({ error: 'Premium cannot be set without Apple Sign-In' });
+  }
   users[userId].isPremium = isPremium;
   users[userId].premiumSince = isPremium ? new Date().toISOString() : null;
   saveUsers(users);
@@ -274,10 +283,10 @@ function detectSeriousTopic(prompt) {
 // Provider streaming helpers
 async function streamOpenAI({ prompt, language, round = 1 }) {
   if (!openai) return;
-  const roundInstruction = round === 1 
-    ? "Provide a short and concise answer." 
-    : round === 2 
-    ? "Provide a clear and fluent explanation without writing too long." 
+  const roundInstruction = round === 1
+    ? "Provide a short and concise answer."
+    : round === 2
+    ? "Provide a clear and fluent explanation without writing too long."
     : "Provide comprehensive analysis. Up to 400 words allowed.";
   
   const stream = await openai.chat.completions.create({
@@ -300,10 +309,10 @@ async function* chunksFromOpenAI(stream) {
 
 async function streamAnthropic({ prompt, language, round = 1 }) {
   if (!anthropic) return;
-  const roundInstruction = round === 1 
-    ? "Provide a short and concise answer." 
-    : round === 2 
-    ? "Provide a clear and fluent explanation without writing too long." 
+  const roundInstruction = round === 1
+    ? "Provide a short and concise answer."
+    : round === 2
+    ? "Provide a clear and fluent explanation without writing too long."
     : "Provide comprehensive analysis. Up to 400 words allowed.";
     
   const stream = await anthropic.messages.stream({
@@ -327,10 +336,10 @@ async function* chunksFromAnthropic(stream) {
 
 async function streamGemini({ prompt, language, round = 1 }) {
   if (!genAI) return;
-  const roundInstruction = round === 1 
-    ? "Provide a short and concise answer." 
-    : round === 2 
-    ? "Provide a clear and fluent explanation without writing too long." 
+  const roundInstruction = round === 1
+    ? "Provide a short and concise answer."
+    : round === 2
+    ? "Provide a clear and fluent explanation without writing too long."
     : "Provide comprehensive analysis. Up to 400 words allowed.";
     
   const systemInstruction = `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.`;
@@ -358,7 +367,7 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = n
   
   // Round-based instructions
   if (round === 1) {
-    prompt += isSerious 
+    prompt += isSerious
       ? "\n\n[ROUND 1 INSTRUCTION]: This appears to be a serious topic. Provide direct, helpful, and empathetic responses without playful elements."
       : "\n\n[ROUND 1 INSTRUCTION]: Provide a short and concise answer.";
   } else if (round === 2) {
@@ -396,15 +405,15 @@ function moderatorPrompt(style, language, collected, rounds = 1) {
     .join('\n');
 
   // Personalized intro for 3-round conversations
-  const personalizedIntro = rounds >= 3 
-    ? (language === 'Turkish' || language === 'Türkçe' 
-        ? "Üç tur seçtiğine göre bu konuya epey ciddi yaklaşıyorsun, peki o zaman..." 
+  const personalizedIntro = rounds >= 3
+    ? (language === 'Turkish' || language === 'Türkçe'
+        ? "Üç tur seçtiğine göre bu konuya epey ciddi yaklaşıyorsun, peki o zaman..."
         : "Since you chose three rounds, you're quite serious about this topic, well then...")
     : "";
 
   const basePrompt = `Act as a moderator. ${styleGuidance} Synthesize the following model responses into a single, helpful answer. CRITICAL: Respond in the SAME LANGUAGE as the user's original question.`;
   
-  return personalizedIntro 
+  return personalizedIntro
     ? `${basePrompt}\n\n${personalizedIntro}\n\n${lines}`
     : `${basePrompt}\n\n${lines}`;
 }
@@ -582,8 +591,8 @@ app.get('/api/admin/users', (req, res) => {
     lastUsed: user.lastUsed
   }));
   
-  res.json({ 
-    users: userList, 
+  res.json({
+    users: userList,
     count: userList.length,
     premiumCount: userList.filter(u => u.isPremium).length
   });
@@ -599,7 +608,7 @@ app.get('/api/admin/feedbacks', (req, res) => {
     // En yeni feedback'ler önce gelecek şekilde sırala
     feedbacks.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     
-    res.json({ 
+    res.json({
       feedbacks: feedbacks,
       count: feedbacks.length
     });
