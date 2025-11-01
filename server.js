@@ -29,9 +29,9 @@ const openai = new OpenAI({
 
 // AI Model configurations
 const AI_MODELS = {
-  GPT: 'gpt-4o-mini',
-  Claude: 'claude-3-5-haiku-20241022',
-  Gemini: 'gemini-2.0-flash-exp'
+  GPT: 'gpt-5-mini-2025-08-07',
+  Claude: 'claude-haiku-4-5-20251001',
+  Gemini: 'gemini-2.5-flash'
 };
 
 // Helper function to call Claude
