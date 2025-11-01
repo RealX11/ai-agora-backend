@@ -34,6 +34,24 @@ const AI_MODELS = {
   Gemini: 'gemini-2.5-flash'
 };
 
+// Serious topic detection (inspired by old app)
+function detectSeriousTopic(prompt) {
+  const seriousKeywords = [
+    // Health
+    'hasta', 'hastalık', 'ağrı', 'kanser', 'kalp', 'depresyon', 'ilaç', 'doktor', 'acil',
+    'sick', 'disease', 'pain', 'cancer', 'heart', 'depression', 'medicine', 'doctor', 'emergency',
+    // Legal/Financial
+    'boşanma', 'dava', 'mahkeme', 'iflas', 'borç', 'avukat', 'hukuki',
+    'divorce', 'lawsuit', 'court', 'bankruptcy', 'debt', 'lawyer', 'legal',
+    // Crisis
+    'intihar', 'şiddet', 'yardım edin', 'kriz', 'ölüm', 'vefat',
+    'suicide', 'violence', 'help me', 'crisis', 'death', 'died'
+  ];
+  
+  const lowerPrompt = prompt.toLowerCase();
+  return seriousKeywords.some(keyword => lowerPrompt.includes(keyword));
+}
+
 // Helper function to call Claude
 async function callClaude(prompt, systemPrompt = '') {
   try {
@@ -106,36 +124,61 @@ function getAIFunction(provider) {
   return functions[provider];
 }
 
-// Build prompt based on round number and context
-function buildPrompt(question, roundNumber, context) {
+// Build prompt based on round number and context (inspired by old app)
+function buildPrompt(question, roundNumber, context, isSerious = false) {
   if (roundNumber === 1) {
     // First round - only see the question
-    return question;
-  } else {
-    // Subsequent rounds - see other AIs' previous responses WITH NAMES
-    let prompt = `Original Question: ${question}\n\n`;
+    const instruction = isSerious 
+      ? "\n\n[ROUND 1 INSTRUCTION]: This appears to be a serious topic. Provide direct, helpful, and empathetic responses without playful elements."
+      : "\n\n[ROUND 1 INSTRUCTION]: Provide a short and concise answer.";
+    return question + instruction;
+  } else if (roundNumber === 2) {
+    // Round 2 - see other AIs' responses WITH NAMES, be witty and reference them
+    let prompt = `${question}\n\n`;
     
     if (context && context.length > 0) {
       prompt += `Other AIs' responses:\n\n`;
       context.forEach((response) => {
-        // Response already includes AI name from iOS (e.g., "GPT: ...")
         prompt += `${response}\n\n`;
       });
-      prompt += `Now provide your response. Remember to reference the other AIs by name and add your unique perspective:\n`;
+      
+      if (isSerious) {
+        prompt += `[ROUND 2 INSTRUCTION]: Reference other AIs' responses professionally. Be thorough, supportive, and provide helpful information. Provide a clear and fluent explanation without writing too long.`;
+      } else {
+        prompt += `[ROUND 2 INSTRUCTION]: This is the second round. Reference other AIs' responses (not your own!) with brief, playful references. IGNORE YOUR OWN PREVIOUS RESPONSE - act as if you never wrote it. Only mention other AIs (GPT, Claude, Gemini). Be witty and make the reader smile! Use phrases like "While [Name] suggests...", "I find [Name]'s point amusing because...", "[Name] makes a fair point, but...". Provide a clear and fluent explanation without writing too long.`;
+      }
+    }
+    
+    return prompt;
+  } else {
+    // Round 3 - comprehensive synthesis
+    let prompt = `${question}\n\n`;
+    
+    if (context && context.length > 0) {
+      prompt += `Other AIs' previous responses:\n\n`;
+      context.forEach((response) => {
+        prompt += `${response}\n\n`;
+      });
+      
+      if (isSerious) {
+        prompt += `[ROUND 3 - COMPREHENSIVE ANALYSIS]: Provide a thorough, professional analysis of other AIs' responses. Focus on practical solutions and actionable advice.`;
+      } else {
+        prompt += `[ROUND 3 - SERIOUS ANALYSIS]: Alright, let's get serious. If you requested three rounds, you must be serious about this topic! 😏 Analyze other AIs' previous responses, start with a clever quip but then dive deep. Provide practical solutions, real data, concrete suggestions. Be both entertaining and informative - but this time deliver genuinely useful results! Up to 400 words allowed.`;
+      }
     }
     
     return prompt;
   }
 }
 
-// Build system prompt based on round
+// Build system prompt based on round with word limits (inspired by old app)
 function getSystemPrompt(roundNumber) {
   if (roundNumber === 1) {
-    return "You are participating in a multi-AI debate. Provide a SHORT, CONCISE answer to the question (2-3 sentences maximum). Be direct, clear, and to the point. No lengthy explanations - save those for later rounds.";
+    return "Provide a short and concise answer. STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.";
   } else if (roundNumber === 2) {
-    return "You are in round 2 of a multi-AI debate. You can now see other AIs' responses. DIRECTLY REFERENCE what they said with witty, playful commentary. Use phrases like 'While [AI name] suggests...', 'I find [AI name]'s point about... amusing because...', or '[AI name] makes a fair point, but...'. Be clever, add humor, and make the user smile. Don't be boring - be entertaining while staying analytical!";
+    return "Provide a clear and fluent explanation without writing too long. Be witty and entertaining while staying analytical. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.";
   } else {
-    return "You are in the final round of a multi-AI debate. Synthesize the discussion so far and provide your most comprehensive and well-reasoned response. Build on the collective insights and add your unique perspective with thoughtful analysis.";
+    return "Provide comprehensive analysis. Up to 400 words allowed. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.";
   }
 }
 
@@ -150,7 +193,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Main chat endpoint - handles multi-AI responses
+// Main chat endpoint - SSE streaming for real-time responses
 app.post('/api/chat', async (req, res) => {
   try {
     const { question, providers, roundNumber, context } = req.body;
@@ -161,35 +204,74 @@ app.post('/api/chat', async (req, res) => {
       });
     }
     
+    // Detect if topic is serious
+    const isSerious = detectSeriousTopic(question);
+    
+    // Set up SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+    
+    // Helper to send SSE events
+    const sendEvent = (event, data) => {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+    
+    // Send round start event
+    sendEvent('round', { round: roundNumber });
+    
     const systemPrompt = getSystemPrompt(roundNumber);
-    const responses = {};
     
-    // Call all AIs in parallel
-    const promises = providers.map(async (provider) => {
-      const aiFunction = getAIFunction(provider);
-      
-      if (!aiFunction) {
-        throw new Error(`Unknown provider: ${provider}`);
+    // Process each AI sequentially for better streaming experience
+    for (const provider of providers) {
+      try {
+        const aiFunction = getAIFunction(provider);
+        
+        if (!aiFunction) {
+          sendEvent('provider_error', { 
+            model: provider, 
+            round: roundNumber,
+            message: `Unknown provider: ${provider}` 
+          });
+          continue;
+        }
+        
+        // Get context for this specific provider
+        const providerContext = context && context[provider] ? [] : (context ? Object.values(context).flat() : []);
+        const prompt = buildPrompt(question, roundNumber, providerContext, isSerious);
+        
+        // Get AI response
+        const response = await aiFunction(prompt, systemPrompt);
+        
+        // Stream the complete message (chunk by chunk in future)
+        sendEvent('message', {
+          model: provider,
+          round: roundNumber,
+          text: response
+        });
+        
+      } catch (error) {
+        console.error(`Error with ${provider}:`, error);
+        sendEvent('provider_error', { 
+          model: provider, 
+          round: roundNumber,
+          message: error.message 
+        });
       }
-      
-      // Get context for this specific provider (excluding its own previous responses)
-      const providerContext = context && context[provider] ? [] : (context ? Object.values(context).flat() : []);
-      const prompt = buildPrompt(question, roundNumber, providerContext);
-      
-      const response = await aiFunction(prompt, systemPrompt);
-      responses[provider] = response;
-    });
+    }
     
-    await Promise.all(promises);
+    // Send completion event
+    sendEvent('complete', { round: roundNumber });
     
-    res.json({ responses });
+    res.end();
     
   } catch (error) {
     console.error('Chat endpoint error:', error);
-    res.status(500).json({ 
-      error: 'Failed to process chat request',
-      details: error.message 
-    });
+    res.write(`event: error\n`);
+    res.write(`data: ${JSON.stringify({ message: error.message })}\n\n`);
+    res.end();
   }
 });
 
