@@ -6,7 +6,7 @@ const path = require('path');
 
 // AI SDK imports
 const Anthropic = require('@anthropic-ai/sdk');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 const OpenAI = require('openai');
 
 const app = express();
@@ -21,7 +21,9 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+const genAI = new GoogleGenAI({
+  apiKey: process.env.GOOGLE_AI_API_KEY,
+});
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -59,14 +61,19 @@ async function callClaude(prompt, systemPrompt = '') {
 // Helper function to call Gemini
 async function callGemini(prompt, systemPrompt = '') {
   try {
-    const model = genAI.getGenerativeModel({ 
+    let contents = prompt;
+    
+    // If system prompt exists, prepend it to the user prompt
+    if (systemPrompt) {
+      contents = `${systemPrompt}\n\n${prompt}`;
+    }
+    
+    const response = await genAI.models.generateContent({
       model: AI_MODELS.Gemini,
-      systemInstruction: systemPrompt || undefined
+      contents: contents
     });
     
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    return response.text();
+    return response.text;
   } catch (error) {
     console.error('Gemini API Error:', error);
     throw new Error(`Gemini API failed: ${error.message}`);
@@ -76,27 +83,19 @@ async function callGemini(prompt, systemPrompt = '') {
 // Helper function to call GPT
 async function callGPT(prompt, systemPrompt = '') {
   try {
-    const messages = [];
+    let input = prompt;
     
+    // If system prompt exists, prepend it to the input
     if (systemPrompt) {
-      messages.push({
-        role: 'system',
-        content: systemPrompt
-      });
+      input = `${systemPrompt}\n\n${prompt}`;
     }
     
-    messages.push({
-      role: 'user',
-      content: prompt
-    });
-    
-    const response = await openai.chat.completions.create({
+    const response = await openai.responses.create({
       model: AI_MODELS.GPT,
-      messages: messages,
-      max_tokens: 1024
+      input: input
     });
     
-    return response.choices[0].message.content;
+    return response.output_text;
   } catch (error) {
     console.error('GPT API Error:', error);
     throw new Error(`GPT API failed: ${error.message}`);
