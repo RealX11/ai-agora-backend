@@ -195,18 +195,18 @@ app.post('/api/chat', async (req, res) => {
 // Moderator endpoint - summarizes all AI responses
 app.post('/api/moderate', async (req, res) => {
   try {
-    const { question, responses, moderator, roundNumber } = req.body;
+    const { question, responses, moderator, roundNumber, totalRounds } = req.body;
     
-    if (!question || !responses || !moderator || !roundNumber) {
+    if (!question || !responses || !moderator || !roundNumber || !totalRounds) {
       return res.status(400).json({ 
         error: 'Missing required fields' 
       });
     }
     
     // Build moderator prompt
-    let moderatorPrompt = `You are the moderator of an AI debate. Round ${roundNumber} has concluded.\n\n`;
+    let moderatorPrompt = `You are the moderator of an AI debate. All ${totalRounds} rounds have concluded.\n\n`;
     moderatorPrompt += `Original Question: ${question}\n\n`;
-    moderatorPrompt += `AI Responses:\n`;
+    moderatorPrompt += `AI Responses across all rounds:\n`;
     
     for (const [provider, responseList] of Object.entries(responses)) {
       moderatorPrompt += `\n${provider}:\n`;
@@ -215,19 +215,19 @@ app.post('/api/moderate', async (req, res) => {
       });
     }
     
-    moderatorPrompt += `\n\nAs the moderator, provide a concise summary that:\n`;
+    moderatorPrompt += `\n\nAs the moderator, after reviewing ALL ${totalRounds} rounds, provide a comprehensive summary that:\n`;
     
-    if (roundNumber === 1) {
+    if (totalRounds === 1) {
       moderatorPrompt += `- Identifies the most logical and well-reasoned answer\n`;
       moderatorPrompt += `- Notes key agreements or disagreements\n`;
       moderatorPrompt += `- Keeps it brief (2-3 sentences)`;
-    } else if (roundNumber === 2) {
+    } else if (totalRounds === 2) {
       moderatorPrompt += `- Analyzes how perspectives evolved across both rounds\n`;
-      moderatorPrompt += `- Identifies which AI provided the most coherent argument\n`;
+      moderatorPrompt += `- Identifies which AI provided the most coherent argument across both rounds\n`;
       moderatorPrompt += `- Summarizes key insights (3-4 sentences)`;
     } else {
-      moderatorPrompt += `- Reviews all rounds comprehensively\n`;
-      moderatorPrompt += `- Determines the most accurate and consistent answer\n`;
+      moderatorPrompt += `- Reviews all three rounds comprehensively\n`;
+      moderatorPrompt += `- Determines the most accurate and consistent answer across all rounds\n`;
       moderatorPrompt += `- Provides a definitive conclusion (4-5 sentences)`;
     }
     
