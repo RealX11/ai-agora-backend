@@ -132,9 +132,9 @@ function getSystemPrompt(roundNumber) {
   if (roundNumber === 1) {
     return "You are participating in a multi-AI debate. Provide a concise, clear answer to the question. Be direct and informative.";
   } else if (roundNumber === 2) {
-    return "You are in round 2 of a multi-AI debate. You can now see other AIs' responses. Analyze their perspectives and provide your enhanced viewpoint. You may agree, disagree, or add new insights. Be analytical but also engaging.";
+    return "You are in round 2 of a multi-AI debate. You can now see other AIs' responses. Reference their ideas with analytical or witty commentary. You may agree, disagree, or add new insights. Be engaging and don't be afraid to add humor when appropriate.";
   } else {
-    return "You are in the final round of a multi-AI debate. Synthesize the discussion so far and provide your most comprehensive and well-reasoned response. Build on the collective insights.";
+    return "You are in the final round of a multi-AI debate. Synthesize the discussion so far and provide your most comprehensive and well-reasoned response. Build on the collective insights and add your unique perspective with thoughtful analysis.";
   }
 }
 
