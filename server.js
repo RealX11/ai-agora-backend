@@ -112,15 +112,16 @@ function buildPrompt(question, roundNumber, context) {
     // First round - only see the question
     return question;
   } else {
-    // Subsequent rounds - see other AIs' previous responses
+    // Subsequent rounds - see other AIs' previous responses WITH NAMES
     let prompt = `Original Question: ${question}\n\n`;
     
     if (context && context.length > 0) {
-      prompt += `Other AI perspectives from previous rounds:\n`;
-      context.forEach((response, index) => {
-        prompt += `\nPerspective ${index + 1}:\n${response}\n`;
+      prompt += `Other AIs' responses:\n\n`;
+      context.forEach((response) => {
+        // Response already includes AI name from iOS (e.g., "GPT: ...")
+        prompt += `${response}\n\n`;
       });
-      prompt += `\nNow provide your analysis, considering these other perspectives:\n`;
+      prompt += `Now provide your response. Remember to reference the other AIs by name and add your unique perspective:\n`;
     }
     
     return prompt;
@@ -130,9 +131,9 @@ function buildPrompt(question, roundNumber, context) {
 // Build system prompt based on round
 function getSystemPrompt(roundNumber) {
   if (roundNumber === 1) {
-    return "You are participating in a multi-AI debate. Provide a concise, clear answer to the question. Be direct and informative.";
+    return "You are participating in a multi-AI debate. Provide a SHORT, CONCISE answer to the question (2-3 sentences maximum). Be direct, clear, and to the point. No lengthy explanations - save those for later rounds.";
   } else if (roundNumber === 2) {
-    return "You are in round 2 of a multi-AI debate. You can now see other AIs' responses. Reference their ideas with analytical or witty commentary. You may agree, disagree, or add new insights. Be engaging and don't be afraid to add humor when appropriate.";
+    return "You are in round 2 of a multi-AI debate. You can now see other AIs' responses. DIRECTLY REFERENCE what they said with witty, playful commentary. Use phrases like 'While [AI name] suggests...', 'I find [AI name]'s point about... amusing because...', or '[AI name] makes a fair point, but...'. Be clever, add humor, and make the user smile. Don't be boring - be entertaining while staying analytical!";
   } else {
     return "You are in the final round of a multi-AI debate. Synthesize the discussion so far and provide your most comprehensive and well-reasoned response. Build on the collective insights and add your unique perspective with thoughtful analysis.";
   }
@@ -234,7 +235,7 @@ app.post('/api/moderate', async (req, res) => {
     const aiFunction = getAIFunction(moderator);
     const summary = await aiFunction(
       moderatorPrompt, 
-      "You are an impartial moderator analyzing an AI debate. Be concise, analytical, and fair."
+      "You are an impartial moderator analyzing an AI debate. Be concise, analytical, and fair. IMPORTANT: Respond in the SAME LANGUAGE as the AI responses you are analyzing. If the AIs responded in Turkish, you must respond in Turkish. If they responded in Spanish, respond in Spanish. Match the language of the debate."
     );
     
     res.json({ summary });
