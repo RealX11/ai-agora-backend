@@ -182,6 +182,154 @@ function getSystemPrompt(roundNumber) {
   }
 }
 
+// ========== JSON-based user counter (MVP) ==========
+
+const USERS_FILE = path.join(__dirname, 'users.json');
+
+// In-process simple lock to serialize file read/write
+let queue = Promise.resolve();
+function withLock(task) {
+  // Chain tasks to ensure sequential execution
+  queue = queue.then(() => task()).catch((err) => {
+    // swallow error to not break the chain; rethrow to caller
+    throw err;
+  });
+  return queue;
+}
+
+async function readUsers() {
+  try {
+    const data = await fs.readFile(USERS_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (err) {
+    // If file not found or invalid, start fresh
+    return {};
+  }
+}
+
+async function writeUsers(obj) {
+  await fs.writeFile(USERS_FILE, JSON.stringify(obj, null, 2));
+}
+
+function nowISO() {
+  return new Date().toISOString();
+}
+
+function addMonths(date, months) {
+  const d = new Date(date);
+  d.setMonth(d.getMonth() + months);
+  return d.toISOString();
+}
+
+function defaultUserRecord() {
+  return {
+    isPremium: false,
+    turnsRemaining: 30,
+    periodEnd: null,
+    createdAt: nowISO(),
+    lastActiveAt: nowISO()
+  };
+}
+
+function refreshPeriodIfNeeded(rec, entitlementActive, currentISO) {
+  // Sync entitlement first
+  rec.isPremium = !!entitlementActive;
+
+  // If no periodEnd and premium just became active, start a new period
+  if (rec.isPremium && !rec.periodEnd) {
+    rec.turnsRemaining = Math.max(rec.turnsRemaining, 1000);
+    rec.periodEnd = addMonths(currentISO, 1);
+    return rec;
+  }
+
+  // If periodEnd exists and passed, reset based on premium/free
+  if (rec.periodEnd && new Date(rec.periodEnd) <= new Date(currentISO)) {
+    rec.turnsRemaining = rec.isPremium ? 1000 : 30;
+    rec.periodEnd = rec.isPremium ? addMonths(currentISO, 1) : null;
+    return rec;
+  }
+
+  // If not premium and no periodEnd, ensure free baseline at most 30
+  if (!rec.isPremium && !rec.periodEnd) {
+    rec.turnsRemaining = Math.min(rec.turnsRemaining, 30);
+  }
+
+  return rec;
+}
+
+// POST /api/consumeTurn { userId, isPremium? }
+// isPremium opsiyonel; gönderilirse server local state’i de senkronlar (entitlement proxy)
+app.post('/api/consumeTurn', async (req, res) => {
+  const { userId, isPremium } = req.body || {};
+  if (!userId) {
+    return res.status(400).json({ error: 'Missing userId' });
+  }
+
+  try {
+    await withLock(async () => {
+      const users = await readUsers();
+      const currentISO = nowISO();
+
+      const rec = users[userId] || defaultUserRecord();
+
+      // Refresh period and entitlement if provided
+      refreshPeriodIfNeeded(rec, isPremium ?? rec.isPremium, currentISO);
+
+      // If premium but no periodEnd yet (first time), ensure it’s set
+      if (rec.isPremium && !rec.periodEnd) {
+        rec.periodEnd = addMonths(currentISO, 1);
+      }
+
+      // Consume 1 turn if available
+      if (rec.turnsRemaining <= 0) {
+        users[userId] = { ...rec, lastActiveAt: currentISO };
+        await writeUsers(users);
+        return res.status(403).json({ error: 'No turns remaining', turnsRemaining: 0, isPremium: rec.isPremium });
+      }
+
+      rec.turnsRemaining -= 1;
+      rec.lastActiveAt = currentISO;
+      users[userId] = rec;
+
+      await writeUsers(users);
+      return res.json({ turnsRemaining: rec.turnsRemaining, isPremium: rec.isPremium, periodEnd: rec.periodEnd });
+    });
+  } catch (err) {
+    console.error('consumeTurn error:', err);
+    return res.status(500).json({ error: 'Failed to consume turn' });
+  }
+});
+
+// POST /api/syncEntitlement { userId, isPremium }
+// StoreKit sonucunu server’a yansıtmak için (MVP’de imzasız, ileride server-side verify eklenebilir)
+app.post('/api/syncEntitlement', async (req, res) => {
+  const { userId, isPremium } = req.body || {};
+  if (!userId || typeof isPremium !== 'boolean') {
+    return res.status(400).json({ error: 'Missing userId or isPremium' });
+  }
+
+  try {
+    await withLock(async () => {
+      const users = await readUsers();
+      const currentISO = nowISO();
+
+      const rec = users[userId] || defaultUserRecord();
+
+      // Apply entitlement and refresh period
+      refreshPeriodIfNeeded(rec, isPremium, currentISO);
+      rec.lastActiveAt = currentISO;
+
+      users[userId] = rec;
+      await writeUsers(users);
+
+      return res.json({ isPremium: rec.isPremium, turnsRemaining: rec.turnsRemaining, periodEnd: rec.periodEnd });
+    });
+  } catch (err) {
+    console.error('syncEntitlement error:', err);
+    return res.status(500).json({ error: 'Failed to sync entitlement' });
+  }
+});
+
 // ROUTES
 
 // Health check
@@ -211,12 +359,13 @@ app.post('/api/chat', async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
     
     // Helper to send SSE events
     const sendEvent = (event, data) => {
       res.write(`event: ${event}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
+      if (typeof res.flush === 'function') res.flush();
     };
     
     // Send round start event
@@ -239,7 +388,8 @@ app.post('/api/chat', async (req, res) => {
         }
         
         // Get context for this specific provider
-        const providerContext = context && context[provider] ? [] : (context ? Object.values(context).flat() : []);
+        // Fixed: use provider-specific context from client
+        const providerContext = context && context[provider] ? context[provider] : [];
         const prompt = buildPrompt(question, roundNumber, providerContext, isSerious);
         
         // Get AI response
@@ -252,6 +402,9 @@ app.post('/api/chat', async (req, res) => {
           text: response
         });
         
+        // Provider-level completion (helps client clean in-flight state)
+        sendEvent('complete', { model: provider, round: roundNumber });
+        
       } catch (error) {
         console.error(`Error with ${provider}:`, error);
         sendEvent('provider_error', { 
@@ -262,9 +415,7 @@ app.post('/api/chat', async (req, res) => {
       }
     }
     
-    // Send completion event
-    sendEvent('complete', { round: roundNumber });
-    
+    // res.end() after provider completes
     res.end();
     
   } catch (error) {
