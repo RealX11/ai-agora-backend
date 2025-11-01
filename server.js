@@ -6,7 +6,7 @@ const path = require('path');
 
 // AI SDK imports
 const Anthropic = require('@anthropic-ai/sdk');
-const { GoogleGenAI } = require('@google/genai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const OpenAI = require('openai');
 
 const app = express();
@@ -21,9 +21,7 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const genAI = new GoogleGenAI({
-  apiKey: process.env.GOOGLE_AI_API_KEY,
-});
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -61,19 +59,14 @@ async function callClaude(prompt, systemPrompt = '') {
 // Helper function to call Gemini
 async function callGemini(prompt, systemPrompt = '') {
   try {
-    let contents = prompt;
-    
-    // If system prompt exists, prepend it to the user prompt
-    if (systemPrompt) {
-      contents = `${systemPrompt}\n\n${prompt}`;
-    }
-    
-    const response = await genAI.models.generateContent({
+    const model = genAI.getGenerativeModel({ 
       model: AI_MODELS.Gemini,
-      contents: contents
+      systemInstruction: systemPrompt || undefined
     });
     
-    return response.text;
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    return response.text();
   } catch (error) {
     console.error('Gemini API Error:', error);
     throw new Error(`Gemini API failed: ${error.message}`);
