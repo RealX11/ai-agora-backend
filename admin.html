@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agora Admin Panel</title>
+    <style>
+        * { 
+            margin: 0; 
+            padding: 0; 
+            box-sizing: border-box; 
+        }
+        
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container { 
+            max-width: 1400px; 
+            margin: 0 auto; 
+        }
+        
+        h1 { 
+            color: white; 
+            font-size: 36px; 
+            margin-bottom: 30px; 
+            text-align: center; 
+            font-weight: 700;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            justify-content: center;
+        }
+        
+        .tab {
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 600;
+        }
+        
+        .tab.active {
+            background: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+        
+        .tab:hover {
+            background: rgba(255, 255, 255, 0.25);
+        }
+        
+        .stats { 
+            display: flex; 
+            gap: 20px; 
+            margin-bottom: 30px; 
+            flex-wrap: wrap; 
+        }
+        
+        .stat-card { 
+            background: rgba(255, 255, 255, 0.2); 
+            backdrop-filter: blur(10px); 
+            border-radius: 16px; 
+            padding: 20px; 
+            color: white; 
+            text-align: center;
+            flex: 1;
+            min-width: 200px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        
+        .stat-number { 
+            font-size: 32px; 
+            font-weight: 700; 
+            display: block; 
+            margin-top: 8px; 
+        }
+        
+        .content-container { 
+            background: white; 
+            border-radius: 20px; 
+            padding: 30px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .search-box { 
+            width: 100%; 
+            padding: 12px 16px; 
+            border: 2px solid #e0e0e0; 
+            border-radius: 12px; 
+            margin-bottom: 20px; 
+            font-size: 16px;
+            transition: border-color 0.2s;
+        }
+        
+        .search-box:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .user-card, .feedback-card { 
+            border: 1px solid #eee; 
+            border-radius: 16px; 
+            padding: 24px; 
+            margin-bottom: 16px; 
+            transition: all 0.3s;
+            background: #fafafa;
+        }
+        
+        .user-card:hover, .feedback-card:hover { 
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1); 
+            transform: translateY(-2px);
+            background: white;
+        }
+        
+        .user-header, .feedback-header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: flex-start; 
+            margin-bottom: 16px; 
+        }
+        
+        .user-info h3, .feedback-info h3 { 
+            color: #333; 
+            margin-bottom: 6px; 
+            font-size: 18px;
+            font-weight: 600;
+        }
+        
+        .user-email, .feedback-email { 
+            color: #666; 
+            font-size: 14px; 
+            margin-bottom: 4px; 
+        }
+        
+        .user-id, .feedback-id { 
+            color: #999; 
+            font-size: 12px; 
+            font-family: 'SF Mono', 'Monaco', monospace; 
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        
+        .premium-badge { 
+            background: linear-gradient(135deg, #FFD700, #FFA500); 
+            color: white; 
+            padding: 8px 16px; 
+            border-radius: 20px; 
+            font-size: 12px; 
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .free-badge { 
+            background: #8E8E93; 
+            color: white; 
+            padding: 8px 16px; 
+            border-radius: 20px; 
+            font-size: 12px; 
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .email-badge {
+            background: #007AFF;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+            margin-top: 4px;
+        }
+        
+        .apple-badge {
+            background: #000000;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+            margin-top: 4px;
+        }
+        
+        .feedback-badge {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .user-stats, .feedback-stats {
+            display: flex;
+            gap: 16px;
+            margin: 16px 0;
+            flex-wrap: wrap;
+        }
+        
+        .stat-item {
+            background: #f8f9fa;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .feedback-message {
+            background: #f8f9fa;
+            padding: 16px;
+            border-radius: 12px;
+            margin: 16px 0;
+            font-style: italic;
+            color: #555;
+            border-left: 4px solid #667eea;
+        }
+        
+        .device-info {
+            background: #e3f2fd;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            color: #1976d2;
+            margin-top: 8px;
+        }
+        
+        .user-actions { 
+            display: flex; 
+            gap: 12px; 
+            margin-top: 16px; 
+            flex-wrap: wrap;
+        }
+        
+        .btn { 
+            padding: 10px 20px; 
+            border: none; 
+            border-radius: 10px; 
+            cursor: pointer; 
+            font-weight: 600; 
+            transition: all 0.2s;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .btn-premium { 
+            background: #007AFF; 
+            color: white; 
+        }
+        
+        .btn-premium:hover { 
+            background: #0056CC; 
+            transform: translateY(-1px);
+        }
+        
+        .btn-reset { 
+            background: #FF3B30; 
+            color: white; 
+        }
+        
+        .btn-reset:hover { 
+            background: #D70015; 
+            transform: translateY(-1px);
+        }
+        
+        .btn-free { 
+            background: #8E8E93; 
+            color: white; 
+        }
+        
+        .btn-free:hover { 
+            background: #6D6D70; 
+            transform: translateY(-1px);
+        }
+        
+        .btn-reduce { 
+            background: #FF9500; 
+            color: white; 
+        }
+        
+        .btn-reduce:hover { 
+            background: #E6850E; 
+            transform: translateY(-1px);
+        }
+        
+        .btn-delete { 
+            background: #FF3B30; 
+            color: white; 
+        }
+        
+        .btn-delete:hover { 
+            background: #D70015; 
+            transform: translateY(-1px);
+        }
+        
+        .loading { 
+            text-align: center; 
+            padding: 60px; 
+            color: white; 
+            font-size: 18px;
+        }
+        
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .empty {
+            text-align: center;
+            padding: 60px;
+            color: #999;
+            font-size: 18px;
+        }
+        
+        .empty-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        
+        .refresh-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: white;
+            border: none;
+            padding: 16px 24px;
+            border-radius: 50px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #667eea;
+        }
+        
+        .refresh-btn:hover {
+            transform: scale(1.05) translateY(-2px);
+            box-shadow: 0 12px 35px rgba(0,0,0,0.4);
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        @media (max-width: 768px) {
+            .user-header, .feedback-header {
+                flex-direction: column;
+                gap: 12px;
+            }
+            
+            .user-actions {
+                flex-direction: column;
+            }
+            
+            .btn {
+                justify-content: center;
+            }
+            
+            h1 {
+                font-size: 28px;
+            }
+            
+            .tabs {
+                flex-direction: column;
+                align-items: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>👑 AI Agora Admin Panel</h1>
+        
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('users')">👥 Kullanıcılar</div>
+            <div class="tab" onclick="switchTab('feedbacks')">💬 Feedback'ler</div>
+        </div>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <div>Toplam Kullanıcı</div>
+                <span class="stat-number" id="totalUsers">-</span>
+            </div>
+            <div class="stat-card">
+                <div>Premium Kullanıcı</div>
+                <span class="stat-number" id="premiumUsers">-</span>
+            </div>
+            <div class="stat-card">
+                <div>Ücretsiz Kullanıcı</div>
+                <span class="stat-number" id="freeUsers">-</span>
+            </div>
+            <div class="stat-card">
+                <div>Toplam Feedback</div>
+                <span class="stat-number" id="totalFeedbacks">-</span>
+            </div>
+        </div>
+        
+        <div class="content-container">
+            <!-- Kullanıcılar Tab -->
+            <div id="users-tab" class="tab-content active">
+                <input type="text" class="search-box" id="userSearchBox" placeholder="🔍 Kullanıcı adı veya email ile ara...">
+                <div id="usersList" class="loading">
+                    <div class="spinner"></div>
+                    Kullanıcılar yükleniyor...
+                </div>
+            </div>
+            
+            <!-- Feedback'ler Tab -->
+            <div id="feedbacks-tab" class="tab-content">
+                <input type="text" class="search-box" id="feedbackSearchBox" placeholder="🔍 Feedback mesajında ara...">
+                <div id="feedbacksList" class="loading">
+                    <div class="spinner"></div>
+                    Feedback'ler yükleniyor...
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <button class="refresh-btn" onclick="refreshData()">
+        <span>🔄</span>
+        <span>Yenile</span>
+    </button>
+
+    <script>
+        let allUsers = [];
+        let allFeedbacks = [];
+        let currentTab = 'users';
+        
+        function switchTab(tab) {
+            // Tab buttons
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelector(`[onclick="switchTab('${tab}')"]`).classList.add('active');
+            
+            // Tab content
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.getElementById(`${tab}-tab`).classList.add('active');
+            
+            currentTab = tab;
+            
+            if (tab === 'users') {
+                displayUsers(allUsers);
+            } else if (tab === 'feedbacks') {
+                displayFeedbacks(allFeedbacks);
+            }
+        }
+        
+        function formatDate(timestamp) {
+            const date = new Date(timestamp);
+            const now = new Date();
+            const diff = now - date;
+            const hours = Math.floor(diff / (1000 * 60 * 60));
+            const days = Math.floor(hours / 24);
+            
+            const dateStr = date.toLocaleDateString('tr-TR', { 
+                day: 'numeric', 
+                month: 'long', 
+                year: 'numeric' 
+            });
+            const timeStr = date.toLocaleTimeString('tr-TR', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+            
+            let relative = '';
+            if (days === 0) {
+                if (hours === 0) relative = 'Az önce';
+                else if (hours === 1) relative = '1 saat önce';
+                else relative = `${hours} saat önce`;
+            } else if (days === 1) {
+                relative = 'Dün';
+            } else if (days < 7) {
+                relative = `${days} gün önce`;
+            } else {
+                relative = dateStr;
+            }
+            
+            return { dateStr, timeStr, relative };
+        }
+
+        function displayUsers(users) {
+            const container = document.getElementById('usersList');
+            
+            if (users.length === 0) {
+                container.innerHTML = `
+                    <div class="empty">
+                        <div class="empty-icon">📭</div>
+                        <div>Kullanıcı bulunamadı</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = users.map(user => {
+                const { dateStr, timeStr, relative } = formatDate(user.lastUsed);
+                const userName = user.userName || 'Anonymous';
+                const userEmail = user.userEmail || 'Email yok';
+                const userId = user.userId || 'unknown';
+                const isPremium = user.isPremium || false;
+                const turnsUsed = user.turnsUsed || 0;
+                const remainingTurns = isPremium ? 'Sınırsız' : `${30 - turnsUsed}/30`;
+                const userType = user.userType || 'device'; // device veya apple
+                
+                return `
+                    <div class="user-card">
+                        <div class="user-header">
+                            <div class="user-info">
+                                <h3>${userName}</h3>
+                                <div class="user-email">${userEmail}</div>
+                                <div class="user-id">ID: ${userId.substring(0, 20)}...</div>
+                                ${userType === 'apple' ? 
+                                    '<span class="apple-badge">🍎 Apple ID</span>' : 
+                                    '<span class="email-badge">📱 Device ID</span>'
+                                }
+                            </div>
+                            <div>
+                                ${isPremium ? 
+                                    '<span class="premium-badge">👑 Premium</span>' : 
+                                    '<span class="free-badge">🆓 Ücretsiz</span>'
+                                }
+                            </div>
+                        </div>
+                        
+                        <div class="user-stats">
+                            <div class="stat-item">🎯 Tur: ${remainingTurns}</div>
+                            ${isPremium ? 
+                                `<div class="stat-item">👑 Premium Tur: ${user.premiumTurnsUsed || 0}</div>` : ''
+                            }
+                            <div class="stat-item">📅 Kayıt: ${formatDate(user.createdAt).relative}</div>
+                            <div class="stat-item">🕒 Son: ${relative}</div>
+                        </div>
+                        
+                        <div class="user-actions">
+                            ${isPremium ? 
+                                `<button class="btn btn-free" onclick="togglePremium('${userId}', false)">
+                                    🆓 Ücretsiz Yap
+                                </button>` :
+                                `<button class="btn btn-premium" onclick="togglePremium('${userId}', true)">
+                                    👑 Premium Yap
+                                </button>`
+                            }
+                            <button class="btn btn-reset" onclick="resetTurns('${userId}')">
+                                🔄 Tur Sıfırla
+                            </button>
+                            ${isPremium ? 
+                                `<button class="btn btn-reset" onclick="resetPremiumTurns('${userId}')">
+                                    👑 Premium Tur Sıfırla
+                                </button>` : ''
+                            }
+                            ${!isPremium ? 
+                                `<button class="btn btn-reduce" onclick="reduceTurns('${userId}')">
+                                    ⬇️ Turu 2 Düşür
+                                </button>` : ''
+                            }
+                            <button class="btn btn-delete" onclick="deleteUser('${userId}')">
+                                🗑️ Sil
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function displayFeedbacks(feedbacks) {
+            const container = document.getElementById('feedbacksList');
+            
+            if (feedbacks.length === 0) {
+                container.innerHTML = `
+                    <div class="empty">
+                        <div class="empty-icon">💬</div>
+                        <div>Henüz feedback yok</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = feedbacks.map(feedback => {
+                const { dateStr, timeStr, relative } = formatDate(feedback.timestamp);
+                const userName = feedback.userName || 'Anonymous';
+                const userEmail = feedback.userEmail || 'Email yok';
+                const userId = feedback.userId || 'unknown';
+                const message = feedback.message || 'Mesaj yok';
+                const isPremium = feedback.isPremium || false;
+                const deviceInfo = feedback.deviceInfo || {};
+                
+                return `
+                    <div class="feedback-card">
+                        <div class="feedback-header">
+                            <div class="feedback-info">
+                                <h3>${userName}</h3>
+                                <div class="feedback-email">${userEmail}</div>
+                                <div class="feedback-id">ID: ${userId.substring(0, 20)}...</div>
+                            </div>
+                            <div>
+                                ${isPremium ? 
+                                    '<span class="premium-badge">👑 Premium</span>' : 
+                                    '<span class="free-badge">🆓 Ücretsiz</span>'
+                                }
+                            </div>
+                        </div>
+                        
+                        <div class="feedback-message">
+                            "${message}"
+                        </div>
+                        
+                        <div class="feedback-stats">
+                            <div class="stat-item">📅 ${relative}</div>
+                            <div class="stat-item">🕒 ${timeStr}</div>
+                            <div class="stat-item">📱 ${deviceInfo.model || 'Bilinmiyor'}</div>
+                        </div>
+                        
+                        ${deviceInfo.systemVersion ? `
+                            <div class="device-info">
+                                📱 ${deviceInfo.model || 'iPhone'} - iOS ${deviceInfo.systemVersion}
+                                ${deviceInfo.appVersion ? ` - App v${deviceInfo.appVersion}` : ''}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function filterUsers(searchTerm) {
+            if (!searchTerm) {
+                displayUsers(allUsers);
+                return;
+            }
+            
+            const filtered = allUsers.filter(user => 
+                user.userName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                user.userEmail.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                user.userId.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+            
+            displayUsers(filtered);
+        }
+
+        function filterFeedbacks(searchTerm) {
+            if (!searchTerm) {
+                displayFeedbacks(allFeedbacks);
+                return;
+            }
+            
+            const filtered = allFeedbacks.filter(feedback => 
+                feedback.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                feedback.userName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                feedback.userEmail.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+            
+            displayFeedbacks(filtered);
+        }
+
+        async function togglePremium(userId, isPremium) {
+            try {
+                const response = await fetch(`/api/admin/user/${userId}/premium`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ isPremium })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log(`✅ Premium durumu değiştirildi: ${result.user.userName}`);
+                    loadUsers(); // Listeyi yenile
+                } else {
+                    alert('Hata: Premium durumu değiştirilemedi');
+                }
+            } catch (error) {
+                console.error('Premium toggle error:', error);
+                alert('Hata: ' + error.message);
+            }
+        }
+
+        async function resetTurns(userId) {
+            if (!confirm('Bu kullanıcının tur sayısını sıfırlamak istediğinizden emin misiniz?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/admin/user/${userId}/reset-turns`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log(`✅ Tur sayısı sıfırlandı: ${result.user.userName}`);
+                    loadUsers(); // Listeyi yenile
+                } else {
+                    alert('Hata: Tur sayısı sıfırlanamadı');
+                }
+            } catch (error) {
+                console.error('Reset turns error:', error);
+                alert('Hata: ' + error.message);
+            }
+        }
+
+        async function reduceTurns(userId) {
+            try {
+                const response = await fetch(`/api/admin/user/${userId}/reduce-turns`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ targetTurns: 2 })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log(`✅ Tur sayısı azaltıldı: ${result.user.userName} - ${result.message}`);
+                    loadUsers(); // Listeyi yenile
+                } else {
+                    const errorData = await response.json();
+                    alert('Hata: ' + (errorData.error || 'Tur sayısı azaltılamadı'));
+                }
+            } catch (error) {
+                console.error('Reduce turns error:', error);
+                alert('Hata: ' + error.message);
+            }
+        }
+
+        async function resetPremiumTurns(userId) {
+            if (!confirm('Bu kullanıcının premium tur sayısını sıfırlamak istediğinizden emin misiniz?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/admin/user/${userId}/reset-premium-turns`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log(`✅ Premium tur sayısı sıfırlandı: ${result.user.userName}`);
+                    loadUsers(); // Listeyi yenile
+                } else {
+                    alert('Hata: Premium tur sayısı sıfırlanamadı');
+                }
+            } catch (error) {
+                console.error('Reset premium turns error:', error);
+                alert('Hata: ' + error.message);
+            }
+        }
+
+        async function deleteUser(userId) {
+            if (!confirm('⚠️ DİKKAT: Bu kullanıcıyı tamamen silmek istediğinizden emin misiniz?\n\nBu işlem geri alınamaz ve kullanıcı yeni kullanıcı gibi algılanacak!')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/admin/user/${userId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log(`✅ Kullanıcı silindi: ${result.message}`);
+                    alert(`✅ Kullanıcı başarıyla silindi!\n\nArtık bu cihaz yeni kullanıcı gibi algılanacak.`);
+                    loadUsers(); // Listeyi yenile
+                } else {
+                    const errorData = await response.json();
+                    alert('Hata: ' + (errorData.error || 'Kullanıcı silinemedi'));
+                }
+            } catch (error) {
+                console.error('Delete user error:', error);
+                alert('Hata: ' + error.message);
+            }
+        }
+
+        async function loadUsers() {
+            try {
+                const response = await fetch('/api/admin/users');
+                const data = await response.json();
+                
+                allUsers = data.users.sort((a, b) => new Date(b.lastUsed) - new Date(a.lastUsed)); // En son kullanılan önce
+                
+                // İstatistikleri güncelle
+                document.getElementById('totalUsers').textContent = data.count;
+                document.getElementById('premiumUsers').textContent = data.premiumCount;
+                document.getElementById('freeUsers').textContent = data.count - data.premiumCount;
+                
+                // Kullanıcıları göster
+                if (currentTab === 'users') {
+                    displayUsers(allUsers);
+                }
+                
+            } catch (error) {
+                console.error('Error loading users:', error);
+                document.getElementById('usersList').innerHTML = `
+                    <div class="empty">
+                        <div class="empty-icon">❌</div>
+                        <div>Kullanıcılar yüklenirken hata oluştu</div>
+                        <div style="margin-top: 10px; font-size: 14px; color: #999;">
+                            ${error.message}
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        async function loadFeedbacks() {
+            try {
+                const response = await fetch('/api/admin/feedbacks');
+                const data = await response.json();
+                
+                allFeedbacks = data.feedbacks; // Zaten en yeni önce sıralanmış
+                
+                // İstatistikleri güncelle
+                document.getElementById('totalFeedbacks').textContent = data.count;
+                
+                // Feedback'leri göster
+                if (currentTab === 'feedbacks') {
+                    displayFeedbacks(allFeedbacks);
+                }
+                
+            } catch (error) {
+                console.error('Error loading feedbacks:', error);
+                document.getElementById('feedbacksList').innerHTML = `
+                    <div class="empty">
+                        <div class="empty-icon">❌</div>
+                        <div>Feedback'ler yüklenirken hata oluştu</div>
+                        <div style="margin-top: 10px; font-size: 14px; color: #999;">
+                            ${error.message}
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        function refreshData() {
+            loadUsers();
+            loadFeedbacks();
+        }
+
+        // Arama kutusu event listener'ları
+        document.getElementById('userSearchBox').addEventListener('input', (e) => {
+            filterUsers(e.target.value);
+        });
+
+        document.getElementById('feedbackSearchBox').addEventListener('input', (e) => {
+            filterFeedbacks(e.target.value);
+        });
+
+        // Auto-refresh every 30 seconds
+        setInterval(refreshData, 30000);
+        
+        // Load on page load
+        loadUsers();
+        loadFeedbacks();
+    </script>
+</body>
+</html>
