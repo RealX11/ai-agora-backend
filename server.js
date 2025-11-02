@@ -14,9 +14,9 @@ if (missing.length) {
   console.warn(`[warn] Missing env vars: ${missing.join(', ')}. Some providers will be disabled.`);
 }
 
-// Modeller (güncel resmi isimler)
-export const OPENAI_CHAT_MODEL = 'gpt-5-mini-2025-08-07';
-export const CLAUDE_MODEL = 'claude-haiku-4-5-20251001';
+// Modeller
+export const OPENAI_CHAT_MODEL = 'gpt-4o';
+export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 export const GEMINI_MODEL = 'gemini-2.5-flash';
 
 const PORT = process.env.PORT || 3000;
@@ -24,7 +24,7 @@ const PORT = process.env.PORT || 3000;
 // İstemciler
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
-const genAI = process.env.GoogleGenerativeAI ? new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY) : null;
+const genAI = process.env.GOOGLE_AI_API_KEY ? new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY) : null;
 
 const app = express();
 app.use(cors());
@@ -323,7 +323,7 @@ app.post('/api/chat', async (req, res) => {
         })
       );
 
-      // Finalize sinyali
+      // Finalize sinyali (tam metni tekrar göndermeden)
       for (const [model, text] of buffers.entries()) {
         if (text) {
           collected.push({ model, round: r, text });
@@ -335,7 +335,7 @@ app.post('/api/chat', async (req, res) => {
     });
   }
 
-  // Moderatör
+  // Moderatör: rounds'a göre kapsam ayarlı değerlendirme + kıyas + nihai karar
   const modPrompt = moderatorPrompt(language, collected, rounds);
 
   async function* moderatorRun() {
@@ -355,6 +355,7 @@ app.post('/api/chat', async (req, res) => {
       for await (const c of chunksFromGemini(s)) yield c;
       return;
     }
+    // Yedek: OpenAI varsa onu kullan
     if (openai) {
       const s = await streamOpenAI({ prompt: modPrompt, language, round: moderatorRoundTone });
       for await (const c of chunksFromOpenAI(s)) yield c;
