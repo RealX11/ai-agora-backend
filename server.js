@@ -7,18 +7,21 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 dotenv.config();
 
+// İsteğe bağlı sağlayıcılar: hangi anahtar varsa o sağlayıcı aktif olur
 const requiredEnv = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_AI_API_KEY'];
 const missing = requiredEnv.filter((k) => !process.env[k]);
 if (missing.length) {
   console.warn(`[warn] Missing env vars: ${missing.join(', ')}. Some providers will be disabled.`);
 }
 
+// Modeller
 export const OPENAI_CHAT_MODEL = 'gpt-4o';
 export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 export const GEMINI_MODEL = 'gemini-2.5-flash';
 
 const PORT = process.env.PORT || 3000;
 
+// İstemciler
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
 const genAI = process.env.GOOGLE_AI_API_KEY ? new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY) : null;
@@ -27,12 +30,14 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
+// Basit istatistikler
 const stats = {
   startedAt: new Date().toISOString(),
   requests: 0,
   chats: 0
 };
 
+// Sağlık ve istatistik
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
@@ -41,6 +46,7 @@ app.get('/api/stats', (_req, res) => {
   res.json({ ...stats });
 });
 
+// Ciddiyet tespiti (akış kalitesi için; üyelikle ilgisi yok)
 function detectSeriousTopic(prompt) {
   const seriousKeywords = [
     'hasta','hastalık','ağrı','kanser','kalp','depresyon','ilaç','doktor','acil',
@@ -54,6 +60,7 @@ function detectSeriousTopic(prompt) {
   return seriousKeywords.some(k => lower.includes(k));
 }
 
+// Sağlayıcı yardımcıları
 async function streamOpenAI({ prompt, language, round = 1 }) {
   if (!openai) return;
   const roundInstruction = round === 1
@@ -129,6 +136,7 @@ async function* chunksFromGemini(stream) {
   }
 }
 
+// Prompt inşası
 function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = null, isSerious = false) {
   let prompt = basePrompt;
   if (round === 1) {
@@ -152,16 +160,8 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = n
   return `${prompt}\n\nOther models said previously:\n${prev}\n\nBriefly comment on agreements/disagreements and, if needed, refine your answer.`;
 }
 
-function moderatorPrompt(style, language, collected, rounds = 1) {
-  const actualStyle = rounds >= 3 ? 'analytical' : style;
-  const styleGuidance = {
-    neutral: 'Balanced and concise final answer.',
-    analytical: 'Compare and contrast key points analytically.',
-    educational: 'Explain clearly with simple examples if useful.',
-    creative: 'Provide an engaging, creative synthesis.',
-    'quick-summary': 'Provide a terse executive summary.',
-  }[actualStyle] || 'Balanced and concise final answer.';
-
+// Moderator prompt (stil kaldırıldı; sabit, mantıklı sentez)
+function moderatorPrompt(language, collected, rounds = 1) {
   const lines = collected.map((c) => `- [${c.model} R${c.round}] ${c.text}`).join('\n');
 
   const personalizedIntro = rounds >= 3 
@@ -170,11 +170,14 @@ function moderatorPrompt(style, language, collected, rounds = 1) {
         : "Since you chose three rounds, you're quite serious about this topic, well then...")
     : "";
 
-  const basePrompt = `Act as a moderator. ${styleGuidance} Synthesize the following model responses into a single, helpful answer. CRITICAL: Respond in the SAME LANGUAGE as the user's original question.`;
+  const basePrompt = "Act as a neutral moderator. Compare and synthesize the following model responses into one clear, practical, and helpful final answer. Focus on correctness, reasoning quality, and usefulness. If there are disagreements, explain briefly and choose the most reasonable points. CRITICAL: Respond in the SAME LANGUAGE as the user's original question.";
   
-  return personalizedIntro ? `${basePrompt}\n\n${personalizedIntro}\n\n${lines}` : `${basePrompt}\n\n${lines}`;
+  return personalizedIntro
+    ? `${basePrompt}\n\n${personalizedIntro}\n\n${lines}`
+    : `${basePrompt}\n\n${lines}`;
 }
 
+// SSE Chat endpoint
 app.post('/api/chat', async (req, res) => {
   stats.requests += 1;
   const startedAt = Date.now();
@@ -186,14 +189,15 @@ app.post('/api/chat', async (req, res) => {
     useGPT = true,
     useClaude = true,
     useGemini = true,
-    moderatorEngine = 'Claude',
-    moderatorStyle = 'neutral',
+    moderatorEngine = 'Claude'
+    // moderatorStyle kaldırıldı
   } = req.body || {};
 
   if (!prompt || typeof prompt !== 'string') {
     return res.status(400).json({ error: 'Missing prompt' });
   }
 
+  // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -208,7 +212,7 @@ app.post('/api/chat', async (req, res) => {
     res.end();
   };
 
-  sseSend('meta', { startedAt, rounds, moderatorEngine, moderatorStyle });
+  sseSend('meta', { startedAt, rounds, moderatorEngine });
 
   const isSerious = detectSeriousTopic(prompt);
 
@@ -225,6 +229,7 @@ app.post('/api/chat', async (req, res) => {
 
   const collected = [];
 
+  // Turlar
   for (let r = 1; r <= Math.max(1, Math.min(3, rounds)); r++) {
     sseSend('round', { round: r, message: `Round ${r} starting…` });
 
@@ -272,6 +277,7 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
+    // Sağlayıcıları paralel çalıştır, parçaları akıt
     await new Promise(async (resolveRound) => {
       const buffers = new Map();
 
@@ -290,6 +296,7 @@ app.post('/api/chat', async (req, res) => {
         })
       );
 
+      // Finalize sinyali (tam metni tekrar göndermeden)
       for (const [model, text] of buffers.entries()) {
         if (text) {
           collected.push({ model, round: r, text });
@@ -301,7 +308,8 @@ app.post('/api/chat', async (req, res) => {
     });
   }
 
-  const modPrompt = moderatorPrompt(moderatorStyle, language, collected, rounds);
+  // Moderatör: stilsiz, mantıklı sentez
+  const modPrompt = moderatorPrompt(language, collected, rounds);
 
   async function* moderatorRun() {
     if (moderatorEngine === 'GPT' && openai) {
@@ -319,11 +327,14 @@ app.post('/api/chat', async (req, res) => {
       for await (const c of chunksFromGemini(s)) yield c;
       return;
     }
+    // Yedek: OpenAI varsa onu kullan
     if (openai) {
       const s = await streamOpenAI({ prompt: modPrompt, language, round: rounds });
       for await (const c of chunksFromOpenAI(s)) yield c;
       return;
     }
+    // Hiçbiri yoksa sessiz çık
+    return;
   }
 
   for await (const chunk of moderatorRun()) {
