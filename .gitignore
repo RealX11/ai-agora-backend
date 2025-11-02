@@ -3,7 +3,7 @@ node_modules/
 package-lock.json
 yarn.lock
 
-# Environment variables
+# Environment variables (asla commit etmeyin)
 .env
 .env.local
 .env.production
@@ -21,10 +21,12 @@ pids/
 *.seed
 *.pid.lock
 
-# Feedback data
+# Data files we do NOT track anymore
+users.json
 feedback.json
+feedbacks.json
 
-# IDE
+# IDE / Editor
 .vscode/
 .idea/
 *.swp
@@ -35,11 +37,10 @@ feedback.json
 .DS_Store
 Thumbs.db
 
-# Testing
+# Testing outputs
 coverage/
 .nyc_output/
 
-# Build
+# Build outputs
 dist/
 build/
-
