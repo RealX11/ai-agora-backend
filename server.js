@@ -7,7 +7,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 dotenv.config();
 
-// İsteğe bağlı sağlayıcılar: hangi anahtar varsa o sağlayıcı aktif olur
+// İsteğe bağlı sağlayıcılar
 const requiredEnv = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_AI_API_KEY'];
 const missing = requiredEnv.filter((k) => !process.env[k]);
 if (missing.length) {
@@ -46,7 +46,7 @@ app.get('/api/stats', (_req, res) => {
   res.json({ ...stats });
 });
 
-// Ciddiyet tespiti (akış kalitesi için; üyelikle ilgisi yok)
+// Ciddiyet tespiti
 function detectSeriousTopic(prompt) {
   const seriousKeywords = [
     'hasta','hastalık','ağrı','kanser','kalp','depresyon','ilaç','doktor','acil',
@@ -60,7 +60,7 @@ function detectSeriousTopic(prompt) {
   return seriousKeywords.some(k => lower.includes(k));
 }
 
-// Sağlayıcı yardımcıları
+// Sağlayıcı yardımcıları (language’i net şekilde uygulatıyoruz)
 async function streamOpenAI({ prompt, language, round = 1 }) {
   if (!openai) return;
   const roundInstruction = round === 1
@@ -68,10 +68,11 @@ async function streamOpenAI({ prompt, language, round = 1 }) {
     : round === 2
     ? "Provide a clear and fluent explanation without writing too long."
     : "Provide comprehensive analysis. Up to 400 words allowed.";
+  const systemMsg = `${roundInstruction} Respond strictly in ${language}. Do not switch languages.`;
   const stream = await openai.chat.completions.create({
     model: OPENAI_CHAT_MODEL,
     messages: [
-      { role: 'system', content: `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question.` },
+      { role: 'system', content: systemMsg },
       { role: 'user', content: prompt },
     ],
     stream: true,
@@ -92,10 +93,11 @@ async function streamAnthropic({ prompt, language, round = 1 }) {
     : round === 2
     ? "Provide a clear and fluent explanation without writing too long."
     : "Provide comprehensive analysis. Up to 400 words allowed.";
+  const systemMsg = `${roundInstruction} Respond strictly in ${language}. Do not switch languages.`;
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
     max_tokens: 4096,
-    system: `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question.`,
+    system: systemMsg,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
   return stream;
@@ -117,7 +119,7 @@ async function streamGemini({ prompt, language, round = 1 }) {
     : round === 2
     ? "Provide a clear and fluent explanation without writing too long."
     : "Provide comprehensive analysis. Up to 400 words allowed.";
-  const systemInstruction = `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question.`;
+  const systemInstruction = `${roundInstruction} Respond strictly in ${language}. Do not switch languages.`;
   const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction });
   const result = await model.generateContentStream(prompt);
   return result;
@@ -160,7 +162,7 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = n
   return `${prompt}\n\nOther models said previously:\n${prev}\n\nBriefly comment on agreements/disagreements and, if needed, refine your answer.`;
 }
 
-// Moderator prompt (stil kaldırıldı; sabit, mantıklı sentez)
+// Moderatör prompt (stilsiz, mantıklı sentez)
 function moderatorPrompt(language, collected, rounds = 1) {
   const lines = collected.map((c) => `- [${c.model} R${c.round}] ${c.text}`).join('\n');
 
@@ -170,7 +172,7 @@ function moderatorPrompt(language, collected, rounds = 1) {
         : "Since you chose three rounds, you're quite serious about this topic, well then...")
     : "";
 
-  const basePrompt = "Act as a neutral moderator. Compare and synthesize the following model responses into one clear, practical, and helpful final answer. Focus on correctness, reasoning quality, and usefulness. If there are disagreements, explain briefly and choose the most reasonable points. CRITICAL: Respond in the SAME LANGUAGE as the user's original question.";
+  const basePrompt = `Act as a neutral moderator. Compare and synthesize the following model responses into one clear, practical, and helpful final answer. Focus on correctness, reasoning quality, and usefulness. If there are disagreements, explain briefly and choose the most reasonable points. Respond strictly in ${language}. Do not switch languages.`;
   
   return personalizedIntro
     ? `${basePrompt}\n\n${personalizedIntro}\n\n${lines}`
@@ -190,7 +192,6 @@ app.post('/api/chat', async (req, res) => {
     useClaude = true,
     useGemini = true,
     moderatorEngine = 'Claude'
-    // moderatorStyle kaldırıldı
   } = req.body || {};
 
   if (!prompt || typeof prompt !== 'string') {
@@ -308,7 +309,7 @@ app.post('/api/chat', async (req, res) => {
     });
   }
 
-  // Moderatör: stilsiz, mantıklı sentez
+  // Moderatör: stilsiz, mantıklı sentez ve language'e zorunlu uyum
   const modPrompt = moderatorPrompt(language, collected, rounds);
 
   async function* moderatorRun() {
@@ -333,7 +334,6 @@ app.post('/api/chat', async (req, res) => {
       for await (const c of chunksFromOpenAI(s)) yield c;
       return;
     }
-    // Hiçbiri yoksa sessiz çık
     return;
   }
 
