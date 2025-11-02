@@ -162,21 +162,47 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = n
   return `${prompt}\n\nOther models said previously:\n${prev}\n\nBriefly comment on agreements/disagreements and, if needed, refine your answer.`;
 }
 
-// Moderatör prompt (stilsiz, mantıklı sentez)
+// Moderatör prompt (rounds'a göre kapsamlı ama kısa değerlendirme + kıyas + nihai karar)
 function moderatorPrompt(language, collected, rounds = 1) {
-  const lines = collected.map((c) => `- [${c.model} R${c.round}] ${c.text}`).join('\n');
+  const considerRounds =
+    rounds <= 1 ? [1] :
+    rounds === 2 ? [1, 2] :
+    [1, 2, 3];
 
-  const personalizedIntro = rounds >= 3 
-    ? (language === 'Turkish' || language === 'Türkçe' 
-        ? "Üç tur seçtiğine göre bu konuya epey ciddi yaklaşıyorsun, peki o zaman..." 
-        : "Since you chose three rounds, you're quite serious about this topic, well then...")
-    : "";
+  const filtered = collected.filter(c => considerRounds.includes(c.round));
+  const lines = filtered.map((c) => `- [${c.model} R${c.round}] ${c.text}`).join('\n');
 
-  const basePrompt = `Act as a neutral moderator. Compare and synthesize the following model responses into one clear, practical, and helpful final answer. Focus on correctness, reasoning quality, and usefulness. If there are disagreements, explain briefly and choose the most reasonable points. Respond strictly in ${language}. Do not switch languages.`;
-  
-  return personalizedIntro
-    ? `${basePrompt}\n\n${personalizedIntro}\n\n${lines}`
-    : `${basePrompt}\n\n${lines}`;
+  const scopeText =
+    considerRounds.length === 1 ? "Round 1 only" :
+    considerRounds.length === 2 ? "Rounds 1 and 2" :
+    "Rounds 1, 2 and 3";
+
+  const appraisalBrevity =
+    considerRounds.length === 1
+      ? "Keep each model's appraisal extremely brief (1–2 sentences)."
+      : "Keep each model's appraisal brief (2–3 sentences).";
+
+  const analysisDepth =
+    considerRounds.length === 1
+      ? "Provide a concise synthesis."
+      : "Provide a concise but comprehensive synthesis across the considered rounds.";
+
+  const basePrompt = [
+    `Act as a neutral but rigorous moderator.`,
+    `Scope: ${scopeText}.`,
+    `Tasks:`,
+    `1) For each model, give a brief appraisal (strengths, weaknesses, any factual gaps or logic issues). ${appraisalBrevity}`,
+    `2) Compare models: agreements, disagreements, what's missing.`,
+    `3) Choose the most reasonable approach and clearly explain why (in 1–2 sentences).`,
+    `4) Provide one final, practical, and helpful answer for the user (clear and actionable).`,
+    `${analysisDepth}`,
+    `Respond strictly in ${language}. Do not switch languages.`,
+    ``,
+    `Model responses to consider (${scopeText}):`,
+    lines || "(no responses captured)"
+  ].join('\n');
+
+  return basePrompt;
 }
 
 // SSE Chat endpoint
@@ -309,28 +335,29 @@ app.post('/api/chat', async (req, res) => {
     });
   }
 
-  // Moderatör: stilsiz, mantıklı sentez ve language'e zorunlu uyum
+  // Moderatör: rounds'a göre kapsam ayarlı değerlendirme + kıyas + nihai karar
   const modPrompt = moderatorPrompt(language, collected, rounds);
 
   async function* moderatorRun() {
+    const moderatorRoundTone = rounds <= 1 ? 1 : (rounds === 2 ? 2 : 3);
     if (moderatorEngine === 'GPT' && openai) {
-      const s = await streamOpenAI({ prompt: modPrompt, language, round: rounds });
+      const s = await streamOpenAI({ prompt: modPrompt, language, round: moderatorRoundTone });
       for await (const c of chunksFromOpenAI(s)) yield c;
       return;
     }
     if (moderatorEngine === 'Claude' && anthropic) {
-      const s = await streamAnthropic({ prompt: modPrompt, language, round: rounds });
+      const s = await streamAnthropic({ prompt: modPrompt, language, round: moderatorRoundTone });
       for await (const c of chunksFromAnthropic(s)) yield c;
       return;
     }
     if (moderatorEngine === 'Gemini' && genAI) {
-      const s = await streamGemini({ prompt: modPrompt, language, round: rounds });
+      const s = await streamGemini({ prompt: modPrompt, language, round: moderatorRoundTone });
       for await (const c of chunksFromGemini(s)) yield c;
       return;
     }
     // Yedek: OpenAI varsa onu kullan
     if (openai) {
-      const s = await streamOpenAI({ prompt: modPrompt, language, round: rounds });
+      const s = await streamOpenAI({ prompt: modPrompt, language, round: moderatorRoundTone });
       for await (const c of chunksFromOpenAI(s)) yield c;
       return;
     }
