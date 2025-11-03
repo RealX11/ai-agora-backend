@@ -1,50 +1,169 @@
-// ... (dosyanın geri kalanını aynen koruyun)
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// Prompt inşası (GENEL VE KONU-BAĞIMSIZ ŞABLONLA GÜÇLENDİRİLDİ)
-function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = null, isSerious = false) {
-  // Genel talimatlar (her konuya uygun, kısa ve pratik vurgulu)
-  const r1Style =
-    "Provide a short and concise answer that directly addresses the user's question. Avoid filler and hedging. If there are important caveats or risks, mention them briefly.";
-  const r2Style =
-    "Refine your answer by incorporating new, practical value (e.g., clear steps, trade-offs, cost/time/complexity hints). State the strength of evidence in one short phrase (e.g., early, moderate, strong) without fabricating citations. Keep it focused and concrete.";
-  const r3Style =
-    "Deliver a concise, high-utility synthesis: correct any inaccuracies politely, clarify uncertainties, and provide up to 4 actionable suggestions. Emphasize clarity, evidence strength (early/moderate/strong), and practical trade-offs.";
+dotenv.config();
 
-  const roundInstruction = round === 1 ? r1Style : round === 2 ? r2Style : r3Style;
-
-  // Ciddiyet tonu (sağlık/hukuk/finans vb.)
-  const seriousnessTone = isSerious
-    ? "Use a professional and cautious tone. Do not include humor or playful remarks. If the topic can affect health, legal status, or finances, remind the user to consult a qualified professional."
-    : "Maintain a clear and respectful tone. Avoid unnecessary jokes; prioritize clarity.";
-
-  // Nihai sistem talimatı
-  let prompt = [
-    basePrompt,
-    "",
-    `[ROUND ${round} INSTRUCTION]: ${roundInstruction}`,
-    seriousnessTone,
-  ].join("\n");
-
-  // Önceki turlara atıf (kendi önceki cevabını görmezden gel, diğerlerini değerlendir)
-  if (round > 1) {
-    const prev = allRoundResponses
-      .filter((r) => r.round < round && r.model !== currentModel)
-      .map((r) => `- [${r.model} R${r.round}] ${r.text}`)
-      .join("\n");
-
-    prompt += [
-      "",
-      "Other models' previous points to consider (do not repeat them verbatim; refine or challenge constructively):",
-      prev || "(no responses captured)",
-      "Briefly note agreements/disagreements and improve your answer accordingly.",
-    ].join("\n");
-  }
-
-  return prompt;
+// İsteğe bağlı sağlayıcılar
+const requiredEnv = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_AI_API_KEY'];
+const missing = requiredEnv.filter((k) => !process.env[k]);
+if (missing.length) {
+  console.warn(`[warn] Missing env vars: ${missing.join(', ')}. Some providers will be disabled.`);
 }
 
-// Moderatör prompt (KONU-BAĞIMSIZ, KARAR ODAKLI VE PRATİK ŞABLON)
-function moderatorPrompt(language, collected, rounds = 1, isSerious = false) {
+// Modeller
+export const OPENAI_CHAT_MODEL = 'gpt-4o';
+export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+export const GEMINI_MODEL = 'gemini-2.5-flash';
+
+const PORT = process.env.PORT || 3000;
+
+// İstemciler
+const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
+const genAI = process.env.GOOGLE_AI_API_KEY ? new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY) : null;
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: '1mb' }));
+
+// Basit istatistikler
+const stats = {
+  startedAt: new Date().toISOString(),
+  requests: 0,
+  chats: 0
+};
+
+// Sağlık ve istatistik
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+app.get('/api/stats', (_req, res) => {
+  res.json({ ...stats });
+});
+
+// Ciddiyet tespiti
+function detectSeriousTopic(prompt) {
+  const seriousKeywords = [
+    'hasta','hastalık','ağrı','kanser','kalp','depresyon','ilaç','doktor','acil',
+    'sick','disease','pain','cancer','heart','depression','medicine','doctor','emergency',
+    'boşanma','dava','mahkeme','iflas','borç','avukat','hukuki',
+    'divorce','lawsuit','court','bankruptcy','debt','lawyer','legal',
+    'intihar','şiddet','yardım edin','kriz','ölüm','vefat',
+    'suicide','violence','help me','crisis','death','died'
+  ];
+  const lower = prompt.toLowerCase();
+  return seriousKeywords.some(k => lower.includes(k));
+}
+
+// Sağlayıcı yardımcıları (language’i net şekilde uygulatıyoruz)
+async function streamOpenAI({ prompt, language, round = 1 }) {
+  if (!openai) return;
+  const roundInstruction = round === 1
+    ? "Provide a short and concise answer."
+    : round === 2
+    ? "Provide a clear and fluent explanation without writing too long."
+    : "Provide comprehensive analysis. Up to 400 words allowed.";
+  const systemMsg = `${roundInstruction} Respond strictly in ${language}. Do not switch languages.`;
+  const stream = await openai.chat.completions.create({
+    model: OPENAI_CHAT_MODEL,
+    messages: [
+      { role: 'system', content: systemMsg },
+      { role: 'user', content: prompt },
+    ],
+    stream: true,
+  });
+  return stream;
+}
+async function* chunksFromOpenAI(stream) {
+  for await (const part of stream) {
+    const delta = part.choices?.[0]?.delta?.content || '';
+    if (delta) yield delta;
+  }
+}
+
+async function streamAnthropic({ prompt, language, round = 1 }) {
+  if (!anthropic) return;
+  const roundInstruction = round === 1
+    ? "Provide a short and concise answer."
+    : round === 2
+    ? "Provide a clear and fluent explanation without writing too long."
+    : "Provide comprehensive analysis. Up to 400 words allowed.";
+  const systemMsg = `${roundInstruction} Respond strictly in ${language}. Do not switch languages.`;
+  const stream = await anthropic.messages.stream({
+    model: CLAUDE_MODEL,
+    max_tokens: 4096,
+    system: systemMsg,
+    messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+  });
+  return stream;
+}
+async function* chunksFromAnthropic(stream) {
+  for await (const event of stream) {
+    if (event.type === 'message_start' || event.type === 'message_delta') continue;
+    if (event.type === 'content_block_delta') {
+      const t = event.delta?.text;
+      if (t) yield t;
+    }
+  }
+}
+
+async function streamGemini({ prompt, language, round = 1 }) {
+  if (!genAI) return;
+  const roundInstruction = round === 1
+    ? "Provide a short and concise answer."
+    : round === 2
+    ? "Provide a clear and fluent explanation without writing too long."
+    : "Provide comprehensive analysis. Up to 400 words allowed.";
+  const systemInstruction = `${roundInstruction} Respond strictly in ${language}. Do not switch languages.`;
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction });
+  const result = await model.generateContentStream(prompt);
+  return result;
+}
+async function* chunksFromGemini(stream) {
+  let soFar = '';
+  for await (const item of stream.stream) {
+    const t = item?.text();
+    if (!t) continue;
+    let delta = t;
+    if (t.startsWith(soFar)) {
+      delta = t.slice(soFar.length);
+    }
+    soFar = t;
+    if (delta) yield delta;
+  }
+}
+
+// Prompt inşası
+function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = null, isSerious = false) {
+  let prompt = basePrompt;
+  if (round === 1) {
+    prompt += isSerious
+      ? "\n\n[ROUND 1 INSTRUCTION]: This appears to be a serious topic. Provide direct, helpful, and empathetic responses without playful elements."
+      : "\n\n[ROUND 1 INSTRUCTION]: Provide a short and concise answer.";
+  } else if (round === 2) {
+    prompt += isSerious
+      ? "\n\n[ROUND 2 INSTRUCTION]: Reference other AIs' responses professionally. Be thorough, supportive, and provide helpful information. Provide a clear and fluent explanation without writing too long."
+      : "\n\n[ROUND 2 INSTRUCTION]: This is the second round. Reference other AIs' responses (not your own!) with brief, playful references. IGNORE YOUR OWN PREVIOUS RESPONSE - act as if you never wrote it. Only mention other AIs. Be witty and make the reader smile! Provide a clear and fluent explanation without writing too long.";
+  } else if (round === 3) {
+    prompt += isSerious
+      ? "\n\n[ROUND 3 - COMPREHENSIVE ANALYSIS]: Provide a thorough, professional analysis of other AIs' responses. Focus on practical solutions and actionable advice."
+      : "\n\n[ROUND 3 - SERIOUS ANALYSIS]: Alright, let's get serious. If you requested three rounds, you must be serious about this topic! 😏 Analyze other AIs' previous responses, start with a clever quip but then dive deep. Provide practical solutions, real data, concrete suggestions. Be both entertaining and informative - but this time deliver genuinely useful results!";
+  }
+  if (round === 1) return prompt;
+  const prev = allRoundResponses
+    .filter((r) => r.round < round && r.model !== currentModel)
+    .map((r) => `- [${r.model}] ${r.text}`)
+    .join('\n');
+  return `${prompt}\n\nOther models said previously:\n${prev}\n\nBriefly comment on agreements/disagreements and, if needed, refine your answer.`;
+}
+
+// Moderatör prompt (rounds'a göre kapsamlı ama kısa değerlendirme + kıyas + nihai karar)
+function moderatorPrompt(language, collected, rounds = 1) {
   const considerRounds =
     rounds <= 1 ? [1] :
     rounds === 2 ? [1, 2] :
@@ -58,54 +177,202 @@ function moderatorPrompt(language, collected, rounds = 1, isSerious = false) {
     considerRounds.length === 2 ? "Rounds 1 and 2" :
     "Rounds 1, 2 and 3";
 
-  const lengthDiscipline =
+  const appraisalBrevity =
     considerRounds.length === 1
-      ? "Be very concise. Keep each section to 1–2 sentences or up to 3 bullets."
-      : "Be concise. Keep each section short; prioritize clarity and utility.";
+      ? "Keep each model's appraisal extremely brief (1–2 sentences)."
+      : "Keep each model's appraisal brief (2–3 sentences).";
 
-  const tone = isSerious
-    ? "Use a professional, cautious tone. Avoid humor. If the topic can affect health, legal status, or finances, include a clear disclaimer and advise consulting a qualified professional."
-    : "Use a clear, neutral, and helpful tone. Avoid unnecessary flourish; focus on clarity and actionability.";
+  const analysisDepth =
+    considerRounds.length === 1
+      ? "Provide a concise synthesis."
+      : "Provide a concise but comprehensive synthesis across the considered rounds.";
 
-  // Konu bağımsız, sağlam şablon
   const basePrompt = [
-    `Act as a neutral, rigorous moderator who synthesizes multiple AI responses into a single, useful answer.`,
+    `Act as a neutral but rigorous moderator.`,
     `Scope: ${scopeText}.`,
-    `${tone}`,
-    `${lengthDiscipline}`,
-    ``,
-    `Your output MUST follow this structure (use these exact headings in ${language}):`,
-    `## Kısa Özet`,
-    `- 2–3 cümlede sorunun çekirdeğini, ana uzlaşı/ayrışma noktalarını ve kanıt gücünü (ör. erken/orta/güçlü) belirt.`,
-    ``,
-    `## Modellerin Değerlendirmesi`,
-    `- Her model için 1–2 cümle: güçlü yan (somut katkı) ve zayıf yan (eksik/abartı/konu dışı).`,
-    ``,
-    `## Karşılaştırma ve Kanıt Çerçevesi`,
-    `- Nerede hemfikirler, nerede ayrışıyorlar.`,
-    `- Kanıt türü düzeyinde konuş (ör. resmi yönergeler, meta-analiz, uzman görüşü, endüstri standardı). Spesifik kaynak uydurma.`,
-    ``,
-    `## Karar ve Gerekçe`,
-    `- 1 cümlede net karar ver.`,
-    `- En fazla 2 maddeyle gerekçeyi özetle (kanıt gücü veya rasyonel dayanak).`,
-    ``,
-    `## Pratik Plan`,
-    `- 3–5 kısa, uygulanabilir adım sun. Karar/tercih sorularında basit bir karar matrisi yaklaşımı kullan (ör. "bütçe duyarlıysanız A, en yüksek etki istiyorsanız B").`,
-    ``,
-    `## Riskler ve Uyarılar`,
-    `- Konuya özgü riskler/etik/uyumluluk notları; belirsizlik nerede, hangi varsayımlar yapıldı.`,
-    `${isSerious ? "- Sağlık/hukuk/finans etkisi olabilecek konularda net uyarı ve uzman danışma önerisi ekle." : ""}`,
-    ``,
-    `## Sonuç`,
-    `- Tek cümlede net, rehber tonda bir sonuç cümlesi yaz.`,
-    ``,
+    `Tasks:`,
+    `1) For each model, give a brief appraisal (strengths, weaknesses, any factual gaps or logic issues). ${appraisalBrevity}`,
+    `2) Compare models: agreements, disagreements, what's missing.`,
+    `3) Choose the most reasonable approach and clearly explain why (in 1–2 sentences).`,
+    `4) Provide one final, practical, and helpful answer for the user (clear and actionable).`,
+    `${analysisDepth}`,
     `Respond strictly in ${language}. Do not switch languages.`,
     ``,
     `Model responses to consider (${scopeText}):`,
     lines || "(no responses captured)"
-  ].filter(Boolean).join('\n');
+  ].join('\n');
 
   return basePrompt;
 }
 
-// ... (dosyanın geri kalanını aynen koruyun)
+// SSE Chat endpoint
+app.post('/api/chat', async (req, res) => {
+  stats.requests += 1;
+  const startedAt = Date.now();
+
+  const {
+    prompt,
+    language = 'English',
+    rounds = 1,
+    useGPT = true,
+    useClaude = true,
+    useGemini = true,
+    moderatorEngine = 'Claude'
+  } = req.body || {};
+
+  if (!prompt || typeof prompt !== 'string') {
+    return res.status(400).json({ error: 'Missing prompt' });
+  }
+
+  // SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+
+  const sseSend = (event, dataObj) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(dataObj)}\n\n`);
+  };
+  const sseDone = () => {
+    res.write('event: done\n');
+    res.write('data: {}\n\n');
+    res.end();
+  };
+
+  sseSend('meta', { startedAt, rounds, moderatorEngine });
+
+  const isSerious = detectSeriousTopic(prompt);
+
+  const active = [
+    useGPT && openai ? 'GPT' : null,
+    useClaude && anthropic ? 'Claude' : null,
+    useGemini && genAI ? 'Gemini' : null,
+  ].filter(Boolean);
+
+  if (active.length === 0) {
+    sseSend('error', { message: 'No providers available or enabled.' });
+    return sseDone();
+  }
+
+  const collected = [];
+
+  // Turlar
+  for (let r = 1; r <= Math.max(1, Math.min(3, rounds)); r++) {
+    sseSend('round', { round: r, message: `Round ${r} starting…` });
+
+    const tasks = [];
+
+    if (active.includes('GPT')) {
+      tasks.push({
+        name: 'GPT',
+        run: async function* () {
+          const gptPrompt = buildRoundPrompt(prompt, r, collected, 'GPT', isSerious);
+          const stream = await streamOpenAI({ prompt: gptPrompt, language, round: r });
+          if (!stream) return;
+          for await (const chunk of chunksFromOpenAI(stream)) {
+            yield { model: 'GPT', round: r, chunk };
+          }
+        },
+      });
+    }
+
+    if (active.includes('Claude')) {
+      tasks.push({
+        name: 'Claude',
+        run: async function* () {
+          const claudePrompt = buildRoundPrompt(prompt, r, collected, 'Claude', isSerious);
+          const stream = await streamAnthropic({ prompt: claudePrompt, language, round: r });
+          if (!stream) return;
+          for await (const chunk of chunksFromAnthropic(stream)) {
+            yield { model: 'Claude', round: r, chunk };
+          }
+        },
+      });
+    }
+
+    if (active.includes('Gemini')) {
+      tasks.push({
+        name: 'Gemini',
+        run: async function* () {
+          const geminiPrompt = buildRoundPrompt(prompt, r, collected, 'Gemini', isSerious);
+          const stream = await streamGemini({ prompt: geminiPrompt, language, round: r });
+          if (!stream) return;
+          for await (const chunk of chunksFromGemini(stream)) {
+            yield { model: 'Gemini', round: r, chunk };
+          }
+        },
+      });
+    }
+
+    // Sağlayıcıları paralel çalıştır, parçaları akıt
+    await new Promise(async (resolveRound) => {
+      const buffers = new Map();
+
+      await Promise.all(
+        tasks.map(async (t) => {
+          buffers.set(t.name, '');
+          try {
+            for await (const item of t.run()) {
+              const prev = buffers.get(t.name) || '';
+              buffers.set(t.name, prev + item.chunk);
+              sseSend('chunk', { model: item.model, round: r, text: item.chunk });
+            }
+          } catch (e) {
+            sseSend('provider_error', { model: t.name, round: r, message: String(e?.message || e) });
+          }
+        })
+      );
+
+      // Finalize sinyali (tam metni tekrar göndermeden)
+      for (const [model, text] of buffers.entries()) {
+        if (text) {
+          collected.push({ model, round: r, text });
+          sseSend('message', { model, round: r, text: '' });
+        }
+      }
+
+      resolveRound();
+    });
+  }
+
+  // Moderatör: rounds'a göre kapsam ayarlı değerlendirme + kıyas + nihai karar
+  const modPrompt = moderatorPrompt(language, collected, rounds);
+
+  async function* moderatorRun() {
+    const moderatorRoundTone = rounds <= 1 ? 1 : (rounds === 2 ? 2 : 3);
+    if (moderatorEngine === 'GPT' && openai) {
+      const s = await streamOpenAI({ prompt: modPrompt, language, round: moderatorRoundTone });
+      for await (const c of chunksFromOpenAI(s)) yield c;
+      return;
+    }
+    if (moderatorEngine === 'Claude' && anthropic) {
+      const s = await streamAnthropic({ prompt: modPrompt, language, round: moderatorRoundTone });
+      for await (const c of chunksFromAnthropic(s)) yield c;
+      return;
+    }
+    if (moderatorEngine === 'Gemini' && genAI) {
+      const s = await streamGemini({ prompt: modPrompt, language, round: moderatorRoundTone });
+      for await (const c of chunksFromGemini(s)) yield c;
+      return;
+    }
+    // Yedek: OpenAI varsa onu kullan
+    if (openai) {
+      const s = await streamOpenAI({ prompt: modPrompt, language, round: moderatorRoundTone });
+      for await (const c of chunksFromOpenAI(s)) yield c;
+      return;
+    }
+    return;
+  }
+
+  for await (const chunk of moderatorRun()) {
+    sseSend('moderator_chunk', { text: chunk });
+  }
+  sseSend('moderator_message', { text: '' });
+
+  stats.chats += 1;
+  sseDone();
+});
+
+app.listen(PORT, () => {
+  console.log(`AI Agora backend listening on :${PORT}`);
+});
