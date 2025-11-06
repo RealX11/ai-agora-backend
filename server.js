@@ -250,7 +250,9 @@ app.get('/api/device/status/:deviceId', (req, res) => {
     if (now >= resetDate) {
       // Reset monthly rounds
       device.monthlyRoundsRemaining = PREMIUM_MONTHLY_ROUNDS;
-      device.monthlyResetDate = new Date(now.setMonth(now.getMonth() + 1)).toISOString();
+      const nextMonth = new Date(now);
+      nextMonth.setMonth(nextMonth.getMonth() + 1);
+      device.monthlyResetDate = nextMonth.toISOString();
       saveDevices(devicesDB);
       console.log(`🔄 Monthly rounds reset for device: ${deviceId}`);
     }
@@ -312,7 +314,9 @@ app.post('/api/device/consume-rounds', (req, res) => {
     // Initialize monthly tracking if needed
     if (!device.monthlyResetDate) {
       device.monthlyRoundsRemaining = PREMIUM_MONTHLY_ROUNDS;
-      device.monthlyResetDate = new Date(now.setMonth(now.getMonth() + 1)).toISOString();
+      const nextMonth = new Date(now);
+      nextMonth.setMonth(nextMonth.getMonth() + 1);
+      device.monthlyResetDate = nextMonth.toISOString();
       device.subscriptionStartDate = device.subscriptionStartDate || now.toISOString();
     }
     
@@ -320,7 +324,9 @@ app.post('/api/device/consume-rounds', (req, res) => {
     const resetDate = new Date(device.monthlyResetDate);
     if (now >= resetDate) {
       device.monthlyRoundsRemaining = PREMIUM_MONTHLY_ROUNDS;
-      device.monthlyResetDate = new Date(now.setMonth(now.getMonth() + 1)).toISOString();
+      const newNextMonth = new Date(now);
+      newNextMonth.setMonth(newNextMonth.getMonth() + 1);
+      device.monthlyResetDate = newNextMonth.toISOString();
       console.log(`🔄 Monthly rounds reset for device: ${deviceId}`);
     }
     
@@ -419,7 +425,9 @@ app.post('/api/subscription/verify', async (req, res) => {
   
   // Initialize monthly rounds
   device.monthlyRoundsRemaining = PREMIUM_MONTHLY_ROUNDS;
-  device.monthlyResetDate = new Date(now.setMonth(now.getMonth() + 1)).toISOString();
+  const nextMonth = new Date(now);
+  nextMonth.setMonth(nextMonth.getMonth() + 1);
+  device.monthlyResetDate = nextMonth.toISOString();
   
   saveDevices(devicesDB);
   
