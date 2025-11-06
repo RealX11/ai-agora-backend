@@ -83,8 +83,18 @@ function saveDevices(devices) {
 
 let devicesDB = loadDevices();
 
+// Health check endpoints
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+app.get('/', (_req, res) => {
+  res.json({ 
+    status: 'ok', 
+    service: 'AI Agora Backend',
+    version: '1.0.0',
+    time: new Date().toISOString() 
+  });
 });
 
 app.get('/api/stats', (_req, res) => {
@@ -769,6 +779,31 @@ app.post('/api/chat', async (req, res) => {
   sseDone(res);
 });
 
+// Global error handlers
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  console.error('Stack:', error.stack);
+  // Don't exit - let Railway restart if needed
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise);
+  console.error('Reason:', reason);
+  // Don't exit - let Railway restart if needed
+});
+
+process.on('SIGTERM', () => {
+  console.log('⚠️  SIGTERM signal received. Shutting down gracefully...');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('⚠️  SIGINT signal received. Shutting down gracefully...');
+  process.exit(0);
+});
+
 app.listen(PORT, () => {
-  console.log(`AI Agora backend listening on :${PORT}`);
+  console.log(`✅ AI Agora backend listening on :${PORT}`);
+  console.log(`📁 Data directory: ${DATA_DIR}`);
+  console.log(`💾 Devices loaded: ${Object.keys(devicesDB).length}`);
 });
