@@ -1,43 +1,51 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
+// Load env
 dotenv.config();
 
-// İsteğe bağlı sağlayıcılar
+// Env validation
 const requiredEnv = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_AI_API_KEY'];
 const missing = requiredEnv.filter((k) => !process.env[k]);
 if (missing.length) {
   console.warn(`[warn] Missing env vars: ${missing.join(', ')}. Some providers will be disabled.`);
 }
 
-// Modeller
+// Constants per spec
 export const OPENAI_CHAT_MODEL = 'gpt-4o';
 export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 export const GEMINI_MODEL = 'gemini-2.5-flash';
 
 const PORT = process.env.PORT || 3000;
 
-// İstemciler
-const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
-const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
-const genAI = process.env.GOOGLE_AI_API_KEY ? new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY) : null;
+// Clients
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
+const anthropic = process.env.ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  : null;
+const genAI = process.env.GOOGLE_AI_API_KEY
+  ? new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY)
+  : null;
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
-// Basit istatistikler
+// Simple in-memory stats
 const stats = {
   startedAt: new Date().toISOString(),
   requests: 0,
-  chats: 0
+  chats: 0,
+  feedbacks: 0,
 };
 
-// Sağlık ve istatistik
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
@@ -46,39 +54,106 @@ app.get('/api/stats', (_req, res) => {
   res.json({ ...stats });
 });
 
-// Ciddiyet tespiti
-function detectSeriousTopic(prompt) {
-  const seriousKeywords = [
-    'hasta','hastalık','ağrı','kanser','kalp','depresyon','ilaç','doktor','acil',
-    'sick','disease','pain','cancer','heart','depression','medicine','doctor','emergency',
-    'boşanma','dava','mahkeme','iflas','borç','avukat','hukuki',
-    'divorce','lawsuit','court','bankruptcy','debt','lawyer','legal',
-    'intihar','şiddet','yardım edin','kriz','ölüm','vefat',
-    'suicide','violence','help me','crisis','death','died'
-  ];
-  const lower = prompt.toLowerCase();
-  return seriousKeywords.some(k => lower.includes(k));
+app.get('/api/feedbacks', (_req, res) => {
+  try {
+    if (fs.existsSync('feedbacks.json')) {
+      const feedbacks = JSON.parse(fs.readFileSync('feedbacks.json', 'utf8'));
+      res.json({ feedbacks, count: feedbacks.length });
+    } else {
+      res.json({ feedbacks: [], count: 0 });
+    }
+  } catch (e) {
+    res.status(500).json({ error: 'Could not read feedbacks' });
+  }
+});
+
+app.post('/api/feedback', (req, res) => {
+  stats.feedbacks += 1;
+  console.log('[feedback]', JSON.stringify(req.body));
+  
+  // Save to file with user info
+  const feedback = {
+    ...req.body,
+    timestamp: new Date().toISOString(),
+    id: Date.now(),
+    // Kullanıcı bilgilerini ekle
+    userId: req.body.userId || 'unknown',
+    userName: req.body.userName || 'Anonymous',
+    userEmail: req.body.userEmail || '',
+    deviceInfo: req.body.deviceInfo || {}
+  };
+  
+  try {
+    let feedbacks = [];
+    if (fs.existsSync('feedbacks.json')) {
+      feedbacks = JSON.parse(fs.readFileSync('feedbacks.json', 'utf8'));
+    }
+    feedbacks.push(feedback);
+    fs.writeFileSync('feedbacks.json', JSON.stringify(feedbacks, null, 2));
+    
+    console.log(`✅ Feedback kaydedildi: ${feedback.userName} - ${feedback.message?.substring(0, 50)}...`);
+  } catch (e) {
+    console.error('[feedback] File write error:', e);
+  }
+  
+  res.json({ ok: true });
+});
+
+function sseHeaders(res) {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
 }
 
-// Sağlayıcı yardımcıları (language’i net şekilde uygulatıyoruz)
+function sseSend(res, event, dataObj) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(dataObj)}\n\n`);
+}
+
+function sseDone(res) {
+  res.write('event: done\n');
+  res.write('data: {}\n\n');
+  res.end();
+}
+
+// Serious topic detection
+function detectSeriousTopic(prompt) {
+  const seriousKeywords = [
+    // Health
+    'hasta', 'hastalık', 'ağrı', 'kanser', 'kalp', 'depresyon', 'ilaç', 'doktor', 'acil',
+    'sick', 'disease', 'pain', 'cancer', 'heart', 'depression', 'medicine', 'doctor', 'emergency',
+    // Legal/Financial
+    'boşanma', 'dava', 'mahkeme', 'iflas', 'borç', 'avukat', 'hukuki',
+    'divorce', 'lawsuit', 'court', 'bankruptcy', 'debt', 'lawyer', 'legal',
+    // Crisis
+    'intihar', 'şiddet', 'yardım edin', 'kriz', 'ölüm', 'vefat',
+    'suicide', 'violence', 'help me', 'crisis', 'death', 'died'
+  ];
+  
+  const lowerPrompt = prompt.toLowerCase();
+  return seriousKeywords.some(keyword => lowerPrompt.includes(keyword));
+}
+
+// Provider streaming helpers
 async function streamOpenAI({ prompt, language, round = 1 }) {
   if (!openai) return;
-  const roundInstruction = round === 1
-    ? "Provide a short and concise answer."
-    : round === 2
-    ? "Provide a clear and fluent explanation without writing too long."
+  const roundInstruction = round === 1 
+    ? "Provide a short and concise answer." 
+    : round === 2 
+    ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
-  const systemMsg = `${roundInstruction} Respond strictly in ${language}. Do not switch languages.`;
+  
   const stream = await openai.chat.completions.create({
     model: OPENAI_CHAT_MODEL,
     messages: [
-      { role: 'system', content: systemMsg },
+      { role: 'system', content: `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.` },
       { role: 'user', content: prompt },
     ],
     stream: true,
   });
   return stream;
 }
+
 async function* chunksFromOpenAI(stream) {
   for await (const part of stream) {
     const delta = part.choices?.[0]?.delta?.content || '';
@@ -88,20 +163,21 @@ async function* chunksFromOpenAI(stream) {
 
 async function streamAnthropic({ prompt, language, round = 1 }) {
   if (!anthropic) return;
-  const roundInstruction = round === 1
-    ? "Provide a short and concise answer."
-    : round === 2
-    ? "Provide a clear and fluent explanation without writing too long."
+  const roundInstruction = round === 1 
+    ? "Provide a short and concise answer." 
+    : round === 2 
+    ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
-  const systemMsg = `${roundInstruction} Respond strictly in ${language}. Do not switch languages.`;
+    
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
     max_tokens: 4096,
-    system: systemMsg,
+    system: `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
   return stream;
 }
+
 async function* chunksFromAnthropic(stream) {
   for await (const event of stream) {
     if (event.type === 'message_start' || event.type === 'message_delta') continue;
@@ -114,16 +190,18 @@ async function* chunksFromAnthropic(stream) {
 
 async function streamGemini({ prompt, language, round = 1 }) {
   if (!genAI) return;
-  const roundInstruction = round === 1
-    ? "Provide a short and concise answer."
-    : round === 2
-    ? "Provide a clear and fluent explanation without writing too long."
+  const roundInstruction = round === 1 
+    ? "Provide a short and concise answer." 
+    : round === 2 
+    ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
-  const systemInstruction = `${roundInstruction} Respond strictly in ${language}. Do not switch languages.`;
+    
+  const systemInstruction = `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.`;
   const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction });
   const result = await model.generateContentStream(prompt);
   return result;
 }
+
 async function* chunksFromGemini(stream) {
   let soFar = '';
   for await (const item of stream.stream) {
@@ -138,11 +216,12 @@ async function* chunksFromGemini(stream) {
   }
 }
 
-// Prompt inşası
 function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = null, isSerious = false) {
   let prompt = basePrompt;
+  
+  // Round-based instructions
   if (round === 1) {
-    prompt += isSerious
+    prompt += isSerious 
       ? "\n\n[ROUND 1 INSTRUCTION]: This appears to be a serious topic. Provide direct, helpful, and empathetic responses without playful elements."
       : "\n\n[ROUND 1 INSTRUCTION]: Provide a short and concise answer.";
   } else if (round === 2) {
@@ -154,6 +233,7 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = n
       ? "\n\n[ROUND 3 - COMPREHENSIVE ANALYSIS]: Provide a thorough, professional analysis of other AIs' responses. Focus on practical solutions and actionable advice."
       : "\n\n[ROUND 3 - SERIOUS ANALYSIS]: Alright, let's get serious. If you requested three rounds, you must be serious about this topic! 😏 Analyze other AIs' previous responses, start with a clever quip but then dive deep. Provide practical solutions, real data, concrete suggestions. Be both entertaining and informative - but this time deliver genuinely useful results!";
   }
+  
   if (round === 1) return prompt;
   const prev = allRoundResponses
     .filter((r) => r.round < round && r.model !== currentModel)
@@ -162,47 +242,23 @@ function buildRoundPrompt(basePrompt, round, allRoundResponses, currentModel = n
   return `${prompt}\n\nOther models said previously:\n${prev}\n\nBriefly comment on agreements/disagreements and, if needed, refine your answer.`;
 }
 
-// Moderatör prompt (rounds'a göre kapsamlı ama kısa değerlendirme + kıyas + nihai karar)
 function moderatorPrompt(language, collected, rounds = 1) {
-  const considerRounds =
-    rounds <= 1 ? [1] :
-    rounds === 2 ? [1, 2] :
-    [1, 2, 3];
+  const lines = collected
+    .map((c) => `- [${c.model} R${c.round}] ${c.text}`)
+    .join('\n');
 
-  const filtered = collected.filter(c => considerRounds.includes(c.round));
-  const lines = filtered.map((c) => `- [${c.model} R${c.round}] ${c.text}`).join('\n');
+  // Personalized intro for 3-round conversations
+  const personalizedIntro = rounds >= 3 
+    ? (language === 'Turkish' || language === 'Türkçe' 
+        ? "Üç tur seçtiğine göre bu konuya epey ciddi yaklaşıyorsun, peki o zaman..." 
+        : "Since you chose three rounds, you're quite serious about this topic, well then...")
+    : "";
 
-  const scopeText =
-    considerRounds.length === 1 ? "Round 1 only" :
-    considerRounds.length === 2 ? "Rounds 1 and 2" :
-    "Rounds 1, 2 and 3";
-
-  const appraisalBrevity =
-    considerRounds.length === 1
-      ? "Keep each model's appraisal extremely brief (1–2 sentences)."
-      : "Keep each model's appraisal brief (2–3 sentences).";
-
-  const analysisDepth =
-    considerRounds.length === 1
-      ? "Provide a concise synthesis."
-      : "Provide a concise but comprehensive synthesis across the considered rounds.";
-
-  const basePrompt = [
-    `Act as a neutral but rigorous moderator.`,
-    `Scope: ${scopeText}.`,
-    `Tasks:`,
-    `1) For each model, give a brief appraisal (strengths, weaknesses, any factual gaps or logic issues). ${appraisalBrevity}`,
-    `2) Compare models: agreements, disagreements, what's missing.`,
-    `3) Choose the most reasonable approach and clearly explain why (in 1–2 sentences).`,
-    `4) Provide one final, practical, and helpful answer for the user (clear and actionable).`,
-    `${analysisDepth}`,
-    `Respond strictly in ${language}. Do not switch languages.`,
-    ``,
-    `Model responses to consider (${scopeText}):`,
-    lines || "(no responses captured)"
-  ].join('\n');
-
-  return basePrompt;
+  const basePrompt = `Act as a moderator. Provide a balanced, concise synthesis that highlights agreements, disagreements, and the most actionable conclusions. CRITICAL: Respond in the SAME LANGUAGE as the user's original question.`;
+  
+  return personalizedIntro 
+    ? `${basePrompt}\n\n${personalizedIntro}\n\n${lines}`
+    : `${basePrompt}\n\n${lines}`;
 }
 
 // SSE Chat endpoint
@@ -217,30 +273,17 @@ app.post('/api/chat', async (req, res) => {
     useGPT = true,
     useClaude = true,
     useGemini = true,
-    moderatorEngine = 'Claude'
+    moderatorEngine = 'Moderator', // 'GPT' | 'Claude' | 'Gemini' | 'Moderator'
   } = req.body || {};
 
   if (!prompt || typeof prompt !== 'string') {
     return res.status(400).json({ error: 'Missing prompt' });
   }
 
-  // SSE headers
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
+  sseHeaders(res);
+  sseSend(res, 'meta', { startedAt, rounds, moderatorEngine });
 
-  const sseSend = (event, dataObj) => {
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(dataObj)}\n\n`);
-  };
-  const sseDone = () => {
-    res.write('event: done\n');
-    res.write('data: {}\n\n');
-    res.end();
-  };
-
-  sseSend('meta', { startedAt, rounds, moderatorEngine });
-
+  // Detect if topic is serious
   const isSerious = detectSeriousTopic(prompt);
 
   const active = [
@@ -250,15 +293,15 @@ app.post('/api/chat', async (req, res) => {
   ].filter(Boolean);
 
   if (active.length === 0) {
-    sseSend('error', { message: 'No providers available or enabled.' });
-    return sseDone();
+    sseSend(res, 'error', { message: 'No providers available or enabled.' });
+    return sseDone(res);
   }
 
+  // First-come-first-serve streaming over rounds
   const collected = [];
 
-  // Turlar
   for (let r = 1; r <= Math.max(1, Math.min(3, rounds)); r++) {
-    sseSend('round', { round: r, message: `Round ${r} starting…` });
+    sseSend(res, 'round', { round: r, message: r === 1 ? 'Round 1 starting…' : `Round ${r} starting…` });
 
     const tasks = [];
 
@@ -304,9 +347,10 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    // Sağlayıcıları paralel çalıştır, parçaları akıt
+    // Run all providers concurrently and pipe chunks as they arrive
     await new Promise(async (resolveRound) => {
       const buffers = new Map();
+      let completedCount = 0;
 
       await Promise.all(
         tasks.map(async (t) => {
@@ -315,19 +359,21 @@ app.post('/api/chat', async (req, res) => {
             for await (const item of t.run()) {
               const prev = buffers.get(t.name) || '';
               buffers.set(t.name, prev + item.chunk);
-              sseSend('chunk', { model: item.model, round: r, text: item.chunk });
+              sseSend(res, 'chunk', { model: item.model, round: r, text: item.chunk });
             }
+            completedCount += 1;
           } catch (e) {
-            sseSend('provider_error', { model: t.name, round: r, message: String(e?.message || e) });
+            completedCount += 1;
+            sseSend(res, 'provider_error', { model: t.name, round: r, message: String(e?.message || e) });
           }
         })
       );
 
-      // Finalize sinyali (tam metni tekrar göndermeden)
+      // Push finalize signal without re-sending full text (avoid duplication)
       for (const [model, text] of buffers.entries()) {
         if (text) {
           collected.push({ model, round: r, text });
-          sseSend('message', { model, round: r, text: '' });
+          sseSend(res, 'message', { model, round: r, text: '' });
         }
       }
 
@@ -335,42 +381,43 @@ app.post('/api/chat', async (req, res) => {
     });
   }
 
-  // Moderatör: rounds'a göre kapsam ayarlı değerlendirme + kıyas + nihai karar
+  // Moderator step
   const modPrompt = moderatorPrompt(language, collected, rounds);
 
   async function* moderatorRun() {
-    const moderatorRoundTone = rounds <= 1 ? 1 : (rounds === 2 ? 2 : 3);
     if (moderatorEngine === 'GPT' && openai) {
-      const s = await streamOpenAI({ prompt: modPrompt, language, round: moderatorRoundTone });
+      const s = await streamOpenAI({ prompt: modPrompt, language, round: rounds });
       for await (const c of chunksFromOpenAI(s)) yield c;
       return;
     }
     if (moderatorEngine === 'Claude' && anthropic) {
-      const s = await streamAnthropic({ prompt: modPrompt, language, round: moderatorRoundTone });
+      const s = await streamAnthropic({ prompt: modPrompt, language, round: rounds });
       for await (const c of chunksFromAnthropic(s)) yield c;
       return;
     }
     if (moderatorEngine === 'Gemini' && genAI) {
-      const s = await streamGemini({ prompt: modPrompt, language, round: moderatorRoundTone });
+      const s = await streamGemini({ prompt: modPrompt, language, round: rounds });
       for await (const c of chunksFromGemini(s)) yield c;
       return;
     }
-    // Yedek: OpenAI varsa onu kullan
     if (openai) {
-      const s = await streamOpenAI({ prompt: modPrompt, language, round: moderatorRoundTone });
+      const s = await streamOpenAI({ prompt: modPrompt, language, round: rounds });
       for await (const c of chunksFromOpenAI(s)) yield c;
       return;
     }
+    // If no providers for moderator
     return;
   }
 
+  let modBuf = '';
   for await (const chunk of moderatorRun()) {
-    sseSend('moderator_chunk', { text: chunk });
+    modBuf += chunk;
+    sseSend(res, 'moderator_chunk', { text: chunk });
   }
-  sseSend('moderator_message', { text: '' });
+  if (modBuf) sseSend(res, 'moderator_message', { text: '' });
 
   stats.chats += 1;
-  sseDone();
+  sseDone(res);
 });
 
 app.listen(PORT, () => {
