@@ -380,7 +380,7 @@ async function streamOpenAI({ prompt, language, round = 1 }) {
   const stream = await openai.chat.completions.create({
     model: OPENAI_CHAT_MODEL,
     messages: [
-      { role: 'system', content: `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.` },
+      { role: 'system', content: `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Detect the language of the user's question and respond in the EXACT SAME LANGUAGE. Never switch languages mid-response. If the question is in Turkish, answer in Turkish. If in English, answer in English. Match the user's language perfectly.` },
       { role: 'user', content: prompt },
     ],
     stream: true,
@@ -406,7 +406,7 @@ async function streamAnthropic({ prompt, language, round = 1 }) {
   const stream = await anthropic.messages.stream({
     model: CLAUDE_MODEL,
     max_tokens: 4096,
-    system: `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.`,
+    system: `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Detect the language of the user's question and respond in the EXACT SAME LANGUAGE. Never switch languages mid-response. If the question is in Turkish, answer in Turkish. If in English, answer in English. Match the user's language perfectly.`,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
   return stream;
@@ -430,7 +430,7 @@ async function streamGemini({ prompt, language, round = 1 }) {
     ? "Provide a clear and fluent explanation without writing too long." 
     : "Provide comprehensive analysis. Up to 400 words allowed.";
     
-  const systemInstruction = `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Always respond in the SAME LANGUAGE as the user's question. If question is in Turkish, answer in Turkish. If in English, answer in English.`;
+  const systemInstruction = `${roundInstruction} STRICT WORD LIMIT ENFORCEMENT. CRITICAL: Detect the language of the user's question and respond in the EXACT SAME LANGUAGE. Never switch languages mid-response. If the question is in Turkish, answer in Turkish. If in English, answer in English. Match the user's language perfectly.`;
   const model = genAI.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction });
   const result = await model.generateContentStream(prompt);
   return result;
@@ -481,14 +481,12 @@ function moderatorPrompt(language, collected, rounds = 1) {
     .map((c) => `- [${c.model} R${c.round}] ${c.text}`)
     .join('\n');
 
-  // Personalized intro for 3-round conversations
+  // Personalized intro for 3-round conversations - AI will detect language from responses
   const personalizedIntro = rounds >= 3 
-    ? (language === 'Turkish' || language === 'Türkçe' 
-        ? "Üç tur seçtiğine göre bu konuya epey ciddi yaklaşıyorsun, peki o zaman..." 
-        : "Since you chose three rounds, you're quite serious about this topic, well then...")
+    ? "Since you chose three rounds, you're quite serious about this topic, well then..."
     : "";
 
-  const basePrompt = `Act as a moderator. Provide a balanced, concise synthesis that highlights agreements, disagreements, and the most actionable conclusions. CRITICAL: Respond in the SAME LANGUAGE as the user's original question.`;
+  const basePrompt = `Act as a moderator. Provide a balanced, concise synthesis that highlights agreements, disagreements, and the most actionable conclusions. CRITICAL: Detect the language used in the responses below and respond in the EXACT SAME LANGUAGE. Never switch languages. Match the language perfectly.`;
   
   return personalizedIntro 
     ? `${basePrompt}\n\n${personalizedIntro}\n\n${lines}`
