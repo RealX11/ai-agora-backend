@@ -46,6 +46,31 @@ const stats = {
   feedbacks: 0,
 };
 
+// Device and subscription tracking
+const DEVICES_FILE = 'devices.json';
+const FREE_ROUNDS_LIMIT = 30;
+
+function loadDevices() {
+  try {
+    if (fs.existsSync(DEVICES_FILE)) {
+      return JSON.parse(fs.readFileSync(DEVICES_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('[devices] Load error:', e);
+  }
+  return {};
+}
+
+function saveDevices(devices) {
+  try {
+    fs.writeFileSync(DEVICES_FILE, JSON.stringify(devices, null, 2));
+  } catch (e) {
+    console.error('[devices] Save error:', e);
+  }
+}
+
+let devicesDB = loadDevices();
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
@@ -148,6 +173,164 @@ app.post('/api/feedback', (req, res) => {
   }
   
   res.json({ ok: true });
+});
+
+// Device registration and rounds tracking
+app.post('/api/device/register', (req, res) => {
+  const { deviceId } = req.body;
+  
+  if (!deviceId || typeof deviceId !== 'string') {
+    return res.status(400).json({ error: 'Missing deviceId' });
+  }
+  
+  // Check if device already exists
+  if (!devicesDB[deviceId]) {
+    devicesDB[deviceId] = {
+      deviceId,
+      registeredAt: new Date().toISOString(),
+      freeRoundsRemaining: FREE_ROUNDS_LIMIT,
+      totalRoundsUsed: 0,
+      isPremium: false,
+      lastAccessedAt: new Date().toISOString()
+    };
+    saveDevices(devicesDB);
+    console.log(`📱 New device registered: ${deviceId}`);
+  } else {
+    devicesDB[deviceId].lastAccessedAt = new Date().toISOString();
+    saveDevices(devicesDB);
+  }
+  
+  res.json({
+    ok: true,
+    device: devicesDB[deviceId]
+  });
+});
+
+// Get device status
+app.get('/api/device/status/:deviceId', (req, res) => {
+  const { deviceId } = req.params;
+  
+  if (!deviceId) {
+    return res.status(400).json({ error: 'Missing deviceId' });
+  }
+  
+  const device = devicesDB[deviceId];
+  
+  if (!device) {
+    return res.json({
+      exists: false,
+      freeRoundsRemaining: FREE_ROUNDS_LIMIT,
+      isPremium: false
+    });
+  }
+  
+  res.json({
+    exists: true,
+    freeRoundsRemaining: device.freeRoundsRemaining,
+    isPremium: device.isPremium,
+    totalRoundsUsed: device.totalRoundsUsed
+  });
+});
+
+// Consume rounds
+app.post('/api/device/consume-rounds', (req, res) => {
+  const { deviceId, roundsCount } = req.body;
+  
+  if (!deviceId || typeof deviceId !== 'string') {
+    return res.status(400).json({ error: 'Missing deviceId' });
+  }
+  
+  if (!roundsCount || typeof roundsCount !== 'number' || roundsCount < 1 || roundsCount > 3) {
+    return res.status(400).json({ error: 'Invalid roundsCount (must be 1-3)' });
+  }
+  
+  // Device must be registered first
+  if (!devicesDB[deviceId]) {
+    return res.status(403).json({ error: 'Device not registered', needsRegistration: true });
+  }
+  
+  const device = devicesDB[deviceId];
+  
+  // Premium users have unlimited rounds
+  if (device.isPremium) {
+    device.totalRoundsUsed += roundsCount;
+    device.lastAccessedAt = new Date().toISOString();
+    saveDevices(devicesDB);
+    
+    return res.json({
+      ok: true,
+      allowed: true,
+      isPremium: true,
+      freeRoundsRemaining: 0,
+      totalRoundsUsed: device.totalRoundsUsed
+    });
+  }
+  
+  // Check if free rounds available
+  if (device.freeRoundsRemaining < roundsCount) {
+    return res.json({
+      ok: true,
+      allowed: false,
+      needsSubscription: true,
+      freeRoundsRemaining: device.freeRoundsRemaining,
+      isPremium: false
+    });
+  }
+  
+  // Consume free rounds
+  device.freeRoundsRemaining -= roundsCount;
+  device.totalRoundsUsed += roundsCount;
+  device.lastAccessedAt = new Date().toISOString();
+  saveDevices(devicesDB);
+  
+  console.log(`🎯 Device ${deviceId} consumed ${roundsCount} rounds. Remaining: ${device.freeRoundsRemaining}`);
+  
+  res.json({
+    ok: true,
+    allowed: true,
+    freeRoundsRemaining: device.freeRoundsRemaining,
+    isPremium: false,
+    totalRoundsUsed: device.totalRoundsUsed
+  });
+});
+
+// Verify App Store subscription
+app.post('/api/subscription/verify', async (req, res) => {
+  const { deviceId, transactionId, receipt } = req.body;
+  
+  if (!deviceId || typeof deviceId !== 'string') {
+    return res.status(400).json({ error: 'Missing deviceId' });
+  }
+  
+  // For now, we'll do basic validation
+  // In production, you would verify with App Store Server API
+  // using App Store Connect API key
+  
+  if (!transactionId && !receipt) {
+    return res.status(400).json({ error: 'Missing transaction info' });
+  }
+  
+  // Device must be registered
+  if (!devicesDB[deviceId]) {
+    return res.status(403).json({ error: 'Device not registered' });
+  }
+  
+  const device = devicesDB[deviceId];
+  
+  // Mark as premium
+  device.isPremium = true;
+  device.subscriptionActivatedAt = new Date().toISOString();
+  device.transactionId = transactionId || 'receipt-based';
+  device.lastAccessedAt = new Date().toISOString();
+  saveDevices(devicesDB);
+  
+  console.log(`💎 Premium activated for device: ${deviceId}`);
+  
+  res.json({
+    ok: true,
+    isPremium: true,
+    message: 'Subscription verified successfully'
+  });
 });
 
 function sseHeaders(res) {
