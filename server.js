@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -47,8 +48,17 @@ const stats = {
 };
 
 // Device and subscription tracking
-const DEVICES_FILE = 'devices.json';
+// Railway Volume: RAILWAY_VOLUME_MOUNT_PATH is automatically set to /app/data
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || './data';
+const DEVICES_FILE = `${DATA_DIR}/devices.json`;
+const FEEDBACKS_FILE = `${DATA_DIR}/feedbacks.json`;
 const FREE_ROUNDS_LIMIT = 30;
+
+// Ensure data directory exists
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  console.log(`📁 Created data directory: ${DATA_DIR}`);
+}
 
 function loadDevices() {
   try {
@@ -81,8 +91,8 @@ app.get('/api/stats', (_req, res) => {
 
 app.get('/api/feedbacks', (_req, res) => {
   try {
-    if (fs.existsSync('feedbacks.json')) {
-      const feedbacks = JSON.parse(fs.readFileSync('feedbacks.json', 'utf8'));
+    if (fs.existsSync(FEEDBACKS_FILE)) {
+      const feedbacks = JSON.parse(fs.readFileSync(FEEDBACKS_FILE, 'utf8'));
       res.json({ feedbacks, count: feedbacks.length });
     } else {
       res.json({ feedbacks: [], count: 0 });
@@ -94,10 +104,10 @@ app.get('/api/feedbacks', (_req, res) => {
 
 app.get('/api/feedbacks/summary', (_req, res) => {
   try {
-    if (!fs.existsSync('feedbacks.json')) {
+    if (!fs.existsSync(FEEDBACKS_FILE)) {
       return res.json({ feedbacks: [], count: 0 });
     }
-    const feedbacks = JSON.parse(fs.readFileSync('feedbacks.json', 'utf8'));
+    const feedbacks = JSON.parse(fs.readFileSync(FEEDBACKS_FILE, 'utf8'));
     const summary = feedbacks.map(({ message, time, userId }) => ({
       time,
       message,
@@ -112,12 +122,12 @@ app.get('/api/feedbacks/summary', (_req, res) => {
 
 app.get('/feedbacks', (_req, res) => {
   try {
-    if (!fs.existsSync('feedbacks.json')) {
+    if (!fs.existsSync(FEEDBACKS_FILE)) {
       return res.send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Feedbacks</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f5f7;margin:0;padding:24px;color:#1c1c1e}h1{font-size:24px;margin-bottom:16px}table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.08)}th,td{padding:14px 16px;text-align:left;border-bottom:1px solid rgba(0,0,0,0.08)}th{background:#f2f2f7;font-size:13px;text-transform:uppercase;letter-spacing:.03em;color:#636366}tbody tr:last-child td{border-bottom:none}td.message{white-space:pre-wrap}</style></head><body><h1>Feedbacks</h1><p>Henüz gönderi yok.</p></body></html>`);
     }
 
-    const feedbacks = JSON.parse(fs.readFileSync('feedbacks.json', 'utf8'));
+    const feedbacks = JSON.parse(fs.readFileSync(FEEDBACKS_FILE, 'utf8'));
     const rows = feedbacks
       .slice()
       .reverse()
@@ -161,11 +171,11 @@ app.post('/api/feedback', (req, res) => {
   
   try {
     let feedbacks = [];
-    if (fs.existsSync('feedbacks.json')) {
-      feedbacks = JSON.parse(fs.readFileSync('feedbacks.json', 'utf8'));
+    if (fs.existsSync(FEEDBACKS_FILE)) {
+      feedbacks = JSON.parse(fs.readFileSync(FEEDBACKS_FILE, 'utf8'));
     }
     feedbacks.push(feedback);
-    fs.writeFileSync('feedbacks.json', JSON.stringify(feedbacks, null, 2));
+    fs.writeFileSync(FEEDBACKS_FILE, JSON.stringify(feedbacks, null, 2));
     
     console.log(`✅ Feedback kaydedildi: ${feedback.userName} - ${feedback.message?.substring(0, 50)}...`);
   } catch (e) {
