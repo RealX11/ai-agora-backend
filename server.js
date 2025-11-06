@@ -85,6 +85,39 @@ app.get('/api/feedbacks/summary', (_req, res) => {
   }
 });
 
+app.get('/feedbacks', (_req, res) => {
+  try {
+    if (!fs.existsSync('feedbacks.json')) {
+      return res.send(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Feedbacks</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f5f7;margin:0;padding:24px;color:#1c1c1e}h1{font-size:24px;margin-bottom:16px}table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.08)}th,td{padding:14px 16px;text-align:left;border-bottom:1px solid rgba(0,0,0,0.08)}th{background:#f2f2f7;font-size:13px;text-transform:uppercase;letter-spacing:.03em;color:#636366}tbody tr:last-child td{border-bottom:none}td.message{white-space:pre-wrap}</style></head><body><h1>Feedbacks</h1><p>Henüz gönderi yok.</p></body></html>`);
+    }
+
+    const feedbacks = JSON.parse(fs.readFileSync('feedbacks.json', 'utf8'));
+    const rows = feedbacks
+      .slice()
+      .reverse()
+      .map(({ time, message, userId }) => {
+        const date = new Date(time).toLocaleString('tr-TR', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        });
+        const safeMessage = String(message || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const safeUser = String(userId || 'unknown').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `<tr><td>${date}</td><td class="message">${safeMessage}</td><td>${safeUser}</td></tr>`;
+      })
+      .join('');
+
+    const html = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Feedbacks</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f5f7;margin:0;padding:24px;color:#1c1c1e}h1{font-size:28px;margin-bottom:16px}p{margin-bottom:16px;color:#636366}table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.08)}th,td{padding:14px 16px;text-align:left;border-bottom:1px solid rgba(0,0,0,0.08)}th{background:#f2f2f7;font-size:13px;text-transform:uppercase;letter-spacing:.03em;color:#636366}tbody tr:last-child td{border-bottom:none}td.message{white-space:pre-wrap}</style></head><body><h1>Feedbacks</h1><p>Toplam ${feedbacks.length} kayıt</p><table><thead><tr><th>Zaman</th><th>Mesaj</th><th>Kullanıcı</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  } catch (e) {
+    console.error('[feedback view] error:', e);
+    res.status(500).send('Feedbacks could not be loaded.');
+  }
+});
+
 app.post('/api/feedback', (req, res) => {
   stats.feedbacks += 1;
   console.log('[feedback]', JSON.stringify(req.body));
