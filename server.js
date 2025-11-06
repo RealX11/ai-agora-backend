@@ -243,11 +243,14 @@ app.get('/api/device/status/:deviceId', (req, res) => {
     });
   }
   
+  // Initialize missing fields for backward compatibility
+  if (!device.monthlyRoundsRemaining) device.monthlyRoundsRemaining = 0;
+  
   // Check if monthly reset is needed
   if (device.isPremium && device.monthlyResetDate) {
     const now = new Date();
     const resetDate = new Date(device.monthlyResetDate);
-    if (now >= resetDate) {
+    if (!isNaN(resetDate.getTime()) && now >= resetDate) {
       // Reset monthly rounds
       device.monthlyRoundsRemaining = PREMIUM_MONTHLY_ROUNDS;
       const nextMonth = new Date(now);
@@ -288,9 +291,14 @@ app.post('/api/device/consume-rounds', (req, res) => {
   const device = devicesDB[deviceId];
   const now = new Date();
   
+  // Initialize missing fields for backward compatibility
+  if (!device.hourlyRoundsUsed) device.hourlyRoundsUsed = 0;
+  if (!device.hourlyResetTime) device.hourlyResetTime = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+  if (!device.monthlyRoundsRemaining) device.monthlyRoundsRemaining = 0;
+  
   // Check hourly limit (abuse prevention for all users)
-  const hourlyResetTime = new Date(device.hourlyResetTime || now);
-  if (now >= hourlyResetTime) {
+  const hourlyResetTime = new Date(device.hourlyResetTime);
+  if (isNaN(hourlyResetTime.getTime()) || now >= hourlyResetTime) {
     // Reset hourly counter
     device.hourlyRoundsUsed = 0;
     device.hourlyResetTime = new Date(now.getTime() + 60 * 60 * 1000).toISOString(); // +1 hour
@@ -322,7 +330,7 @@ app.post('/api/device/consume-rounds', (req, res) => {
     
     // Check if monthly reset is needed
     const resetDate = new Date(device.monthlyResetDate);
-    if (now >= resetDate) {
+    if (!isNaN(resetDate.getTime()) && now >= resetDate) {
       device.monthlyRoundsRemaining = PREMIUM_MONTHLY_ROUNDS;
       const newNextMonth = new Date(now);
       newNextMonth.setMonth(newNextMonth.getMonth() + 1);
