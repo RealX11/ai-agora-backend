@@ -53,6 +53,8 @@ const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || './data';
 const DEVICES_FILE = `${DATA_DIR}/devices.json`;
 const FEEDBACKS_FILE = `${DATA_DIR}/feedbacks.json`;
 const FREE_ROUNDS_LIMIT = 30;
+const PREMIUM_MONTHLY_ROUNDS = 1000;
+const PREMIUM_HOURLY_LIMIT = 50;
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -201,7 +203,14 @@ app.post('/api/device/register', (req, res) => {
       freeRoundsRemaining: FREE_ROUNDS_LIMIT,
       totalRoundsUsed: 0,
       isPremium: false,
-      lastAccessedAt: new Date().toISOString()
+      lastAccessedAt: new Date().toISOString(),
+      // Premium tracking
+      monthlyRoundsRemaining: 0,
+      monthlyResetDate: null,
+      subscriptionStartDate: null,
+      // Hourly abuse prevention
+      hourlyRoundsUsed: 0,
+      hourlyResetTime: new Date().toISOString()
     };
     saveDevices(devicesDB);
     console.log(`📱 New device registered: ${deviceId}`);
@@ -234,11 +243,26 @@ app.get('/api/device/status/:deviceId', (req, res) => {
     });
   }
   
+  // Check if monthly reset is needed
+  if (device.isPremium && device.monthlyResetDate) {
+    const now = new Date();
+    const resetDate = new Date(device.monthlyResetDate);
+    if (now >= resetDate) {
+      // Reset monthly rounds
+      device.monthlyRoundsRemaining = PREMIUM_MONTHLY_ROUNDS;
+      device.monthlyResetDate = new Date(now.setMonth(now.getMonth() + 1)).toISOString();
+      saveDevices(devicesDB);
+      console.log(`🔄 Monthly rounds reset for device: ${deviceId}`);
+    }
+  }
+  
   res.json({
     exists: true,
     freeRoundsRemaining: device.freeRoundsRemaining,
     isPremium: device.isPremium,
-    totalRoundsUsed: device.totalRoundsUsed
+    totalRoundsUsed: device.totalRoundsUsed,
+    monthlyRoundsRemaining: device.monthlyRoundsRemaining || 0,
+    monthlyResetDate: device.monthlyResetDate
   });
 });
 
@@ -260,23 +284,80 @@ app.post('/api/device/consume-rounds', (req, res) => {
   }
   
   const device = devicesDB[deviceId];
+  const now = new Date();
   
-  // Premium users have unlimited rounds
+  // Check hourly limit (abuse prevention for all users)
+  const hourlyResetTime = new Date(device.hourlyResetTime || now);
+  if (now >= hourlyResetTime) {
+    // Reset hourly counter
+    device.hourlyRoundsUsed = 0;
+    device.hourlyResetTime = new Date(now.getTime() + 60 * 60 * 1000).toISOString(); // +1 hour
+  }
+  
+  // Check if hourly limit exceeded
+  if (device.hourlyRoundsUsed + roundsCount > PREMIUM_HOURLY_LIMIT) {
+    const minutesUntilReset = Math.ceil((new Date(device.hourlyResetTime) - now) / 60000);
+    return res.json({
+      ok: true,
+      allowed: false,
+      rateLimited: true,
+      message: `Saatlik limit aşıldı. ${minutesUntilReset} dakika sonra tekrar deneyin.`,
+      resetTime: device.hourlyResetTime,
+      isPremium: device.isPremium
+    });
+  }
+  
+  // Premium users - check monthly rounds
   if (device.isPremium) {
+    // Initialize monthly tracking if needed
+    if (!device.monthlyResetDate) {
+      device.monthlyRoundsRemaining = PREMIUM_MONTHLY_ROUNDS;
+      device.monthlyResetDate = new Date(now.setMonth(now.getMonth() + 1)).toISOString();
+      device.subscriptionStartDate = device.subscriptionStartDate || now.toISOString();
+    }
+    
+    // Check if monthly reset is needed
+    const resetDate = new Date(device.monthlyResetDate);
+    if (now >= resetDate) {
+      device.monthlyRoundsRemaining = PREMIUM_MONTHLY_ROUNDS;
+      device.monthlyResetDate = new Date(now.setMonth(now.getMonth() + 1)).toISOString();
+      console.log(`🔄 Monthly rounds reset for device: ${deviceId}`);
+    }
+    
+    // Check monthly limit
+    if (device.monthlyRoundsRemaining < roundsCount) {
+      const daysUntilReset = Math.ceil((new Date(device.monthlyResetDate) - now) / (1000 * 60 * 60 * 24));
+      return res.json({
+        ok: true,
+        allowed: false,
+        monthlyLimitReached: true,
+        message: `Aylık limit aşıldı (${PREMIUM_MONTHLY_ROUNDS} tur/ay). ${daysUntilReset} gün sonra sıfırlanacak.`,
+        monthlyRoundsRemaining: device.monthlyRoundsRemaining,
+        monthlyResetDate: device.monthlyResetDate,
+        isPremium: true
+      });
+    }
+    
+    // Consume premium rounds
+    device.monthlyRoundsRemaining -= roundsCount;
     device.totalRoundsUsed += roundsCount;
-    device.lastAccessedAt = new Date().toISOString();
+    device.hourlyRoundsUsed += roundsCount;
+    device.lastAccessedAt = now.toISOString();
     saveDevices(devicesDB);
+    
+    console.log(`💎 Premium device ${deviceId} consumed ${roundsCount} rounds. Monthly remaining: ${device.monthlyRoundsRemaining}`);
     
     return res.json({
       ok: true,
       allowed: true,
       isPremium: true,
-      freeRoundsRemaining: 0,
+      monthlyRoundsRemaining: device.monthlyRoundsRemaining,
+      monthlyResetDate: device.monthlyResetDate,
       totalRoundsUsed: device.totalRoundsUsed
     });
   }
   
-  // Check if free rounds available
+  // Free users - check free rounds
   if (device.freeRoundsRemaining < roundsCount) {
     return res.json({
       ok: true,
@@ -290,10 +371,11 @@ app.post('/api/device/consume-rounds', (req, res) => {
   // Consume free rounds
   device.freeRoundsRemaining -= roundsCount;
   device.totalRoundsUsed += roundsCount;
-  device.lastAccessedAt = new Date().toISOString();
+  device.hourlyRoundsUsed += roundsCount;
+  device.lastAccessedAt = now.toISOString();
   saveDevices(devicesDB);
   
-  console.log(`🎯 Device ${deviceId} consumed ${roundsCount} rounds. Remaining: ${device.freeRoundsRemaining}`);
+  console.log(`🎯 Free device ${deviceId} consumed ${roundsCount} rounds. Remaining: ${device.freeRoundsRemaining}`);
   
   res.json({
     ok: true,
@@ -326,19 +408,28 @@ app.post('/api/subscription/verify', async (req, res) => {
   }
   
   const device = devicesDB[deviceId];
+  const now = new Date();
   
-  // Mark as premium
+  // Mark as premium and initialize monthly rounds
   device.isPremium = true;
-  device.subscriptionActivatedAt = new Date().toISOString();
+  device.subscriptionActivatedAt = now.toISOString();
+  device.subscriptionStartDate = now.toISOString();
   device.transactionId = transactionId || 'receipt-based';
-  device.lastAccessedAt = new Date().toISOString();
+  device.lastAccessedAt = now.toISOString();
+  
+  // Initialize monthly rounds
+  device.monthlyRoundsRemaining = PREMIUM_MONTHLY_ROUNDS;
+  device.monthlyResetDate = new Date(now.setMonth(now.getMonth() + 1)).toISOString();
+  
   saveDevices(devicesDB);
   
-  console.log(`💎 Premium activated for device: ${deviceId}`);
+  console.log(`💎 Premium activated for device: ${deviceId} - ${PREMIUM_MONTHLY_ROUNDS} rounds/month`);
   
   res.json({
     ok: true,
     isPremium: true,
+    monthlyRoundsRemaining: device.monthlyRoundsRemaining,
+    monthlyResetDate: device.monthlyResetDate,
     message: 'Subscription verified successfully'
   });
 });
